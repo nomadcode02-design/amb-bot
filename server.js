@@ -42,6 +42,18 @@ function fechaHoraDelTurno(turno) {
   return new Date(`${turno.dia}T${turno.horario}:00-03:00`);
 }
 
+// Decide con cuántos minutos de anticipación mandar el recordatorio,
+// según cuánto tiempo hubo entre el momento de la reserva y la hora del turno.
+// Si reservaron con mucha antelación, avisa 30 min antes; si reservaron
+// más sobre la hora, avisa más cerca (10 o 5 min antes) para no perder el aviso.
+function minutosDeAvisoPara(turno) {
+  const horaTurno = fechaHoraDelTurno(turno);
+  const anticipacionTotal = (horaTurno - new Date(turno.creado)) / 60000;
+  if (anticipacionTotal > 60) return 30;
+  if (anticipacionTotal > 20) return 10;
+  return 5;
+}
+
 app.post('/api/reservar', async (req, res) => {
   try {
     const { nombre, whatsapp, barbero, servicio, dia, horario } = req.body;
@@ -146,8 +158,13 @@ cron.schedule('* * * * *', async () => {
     const horaTurno = fechaHoraDelTurno(turno);
     const minutosFaltantes = (horaTurno - ahora) / 60000;
 
-    // Ventana de 30 a 29 minutos antes (el cron corre una vez por minuto)
-    if (minutosFaltantes <= 30 && minutosFaltantes > 29) {
+    const minutosDeAviso = minutosDeAvisoPara(turno);
+
+    // Si faltan `minutosDeAviso` minutos o menos (y el turno todavía no pasó)
+    // y todavía no se mandó el aviso, se manda ahora. Esto cubre tanto el
+    // caso normal (se detecta al cruzar el umbral) como el de una reserva
+    // hecha sobre la hora (el umbral ya es más chico en ese caso).
+    if (minutosFaltantes <= minutosDeAviso && minutosFaltantes > 0) {
       try {
         await sendMessage(
           turno.whatsapp,
