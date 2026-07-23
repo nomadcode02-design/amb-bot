@@ -50,7 +50,7 @@ function minutosDeAvisoPara(turno) {
   const horaTurno = fechaHoraDelTurno(turno);
   const anticipacionTotal = (horaTurno - new Date(turno.creado)) / 60000;
   if (anticipacionTotal > 60) return 30;
-  if (anticipacionTotal > 20) return 10;
+  if (anticipacionTotal > 20) return 20;
   return 5;
 }
 
