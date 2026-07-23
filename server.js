@@ -34,9 +34,12 @@ function formatearFecha(diaISO) {
   return `${d}/${m}/${y}`;
 }
 
-// Combina "dia" (YYYY-MM-DD) + "horario" (HH:MM) en un objeto Date real
+// Combina "dia" (YYYY-MM-DD) + "horario" (HH:MM) en un objeto Date real.
+// Importante: se fuerza el offset -03:00 (hora de Argentina) para que el
+// cálculo sea correcto sin importar en qué zona horaria corra el servidor
+// de Railway (por defecto suele correr en UTC).
 function fechaHoraDelTurno(turno) {
-  return new Date(`${turno.dia}T${turno.horario}:00`);
+  return new Date(`${turno.dia}T${turno.horario}:00-03:00`);
 }
 
 app.post('/api/reservar', async (req, res) => {
