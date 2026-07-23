@@ -13,6 +13,7 @@ const {
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const path = require('path');
+const fs = require('fs');
 
 let sock = null;
 let isReady = false;
@@ -56,7 +57,14 @@ async function startBot() {
         console.log('Reintentando en 5 segundos...');
         setTimeout(startBot, 5000);
       } else {
-        console.log('Sesión cerrada (logout), hay que volver a escanear el QR.');
+        console.log('Sesión cerrada (logout). Borrando credenciales viejas y generando un QR nuevo automáticamente...');
+        const authPath = path.join(__dirname, 'auth_info');
+        try {
+          fs.rmSync(authPath, { recursive: true, force: true });
+        } catch (e) {
+          console.error('Error borrando credenciales viejas:', e);
+        }
+        setTimeout(startBot, 3000);
       }
     } else if (connection === 'open') {
       isReady = true;
