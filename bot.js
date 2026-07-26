@@ -23,7 +23,7 @@ let latestQR = null;
 const HORA_APERTURA = 9;  // 9 am
 const HORA_CIERRE = 21;   // 9 pm
 // Ajustá este link al real de tu página de reservas
-const LINK_RESERVAS = 'https://amb-barbers.github.io/AMB-BARBERS/formulario.html';
+const LINK_RESERVAS = 'https://nomadcode02-design.github.io/amb-barber/';
 
 function estaDentroDeHorario(fecha = new Date()) {
   const hora = fecha.getHours();
@@ -89,9 +89,11 @@ async function startBot() {
         try {
           await sock.sendMessage(msg.key.remoteJid, {
             text:
-              `¡Hola! En este momento no estamos atendiendo. Nuestro horario es de ` +
-              `${HORA_APERTURA}:00 a ${HORA_CIERRE}:00 hs.\n\n` +
-              `Podés reservar tu turno igual desde nuestra página y te confirmamos apenas abramos:\n${LINK_RESERVAS}`,
+              `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
+              `En este momento no estamos respondiendo\n\n` +
+              `Pero podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
+              `Link: ${LINK_RESERVAS}\n\n` +
+              `Nos vemos!`,
           });
         } catch (e) {
           console.error('Error respondiendo fuera de horario:', e);
