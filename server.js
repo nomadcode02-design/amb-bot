@@ -8,6 +8,19 @@ const cron = require('node-cron');
 const { startBot, sendMessage, getLatestQR, isConnected } = require('./bot');
 const { SERVICIOS, BARBEROS } = require('./data');
 
+// ---------- Red de seguridad: errores no capturados ----------
+// Sin esto, un solo error inesperado en cualquier parte del código (una
+// promesa rechazada sin manejar, por ejemplo) tira abajo TODO el proceso:
+// se cae el bot de WhatsApp, el endpoint de reservas, los recordatorios,
+// todo junto. Con esto, el error queda logueado pero el servidor sigue
+// funcionando para todo lo demás.
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Error no capturado (el servidor sigue funcionando):', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ Promesa rechazada sin manejar (el servidor sigue funcionando):', reason);
+});
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -16,6 +29,7 @@ const TURNOS_FILE = path.join(__dirname, 'turnos.json');
 if (!fs.existsSync(TURNOS_FILE)) fs.writeFileSync(TURNOS_FILE, '[]');
 
 const OWNER_WHATSAPP = process.env.OWNER_WHATSAPP; // ej: 2646023107
+const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave'; // clave del panel de control
 
 function leerTurnos() {
   return JSON.parse(fs.readFileSync(TURNOS_FILE, 'utf-8'));
@@ -107,7 +121,15 @@ app.post('/api/reservar', async (req, res) => {
 });
 
 app.get('/api/turnos', (req, res) => {
-  res.json(leerTurnos());
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    res.json(leerTurnos());
+  } catch (e) {
+    console.error('Error leyendo turnos:', e);
+    res.status(500).json({ error: 'No se pudieron leer los turnos.' });
+  }
 });
 
 app.get('/qr', async (req, res) => {
@@ -148,6 +170,7 @@ app.get('/', (req, res) => res.send('AMB Barbers bot API OK'));
 // ---------- Recordatorio automático 30 minutos antes del turno ----------
 // Corre cada minuto y revisa si algún turno está por empezar en media hora.
 cron.schedule('* * * * *', async () => {
+ try {
   const ahora = new Date();
   const turnos = leerTurnos();
   let huboCambios = false;
@@ -180,6 +203,9 @@ cron.schedule('* * * * *', async () => {
   }
 
   if (huboCambios) guardarTodosLosTurnos(turnos);
+ } catch (e) {
+   console.error('Error general en el cron de recordatorios:', e);
+ }
 });
 
 const PORT = process.env.PORT || 3000;
