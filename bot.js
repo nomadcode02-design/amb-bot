@@ -90,8 +90,8 @@ async function startBot() {
           await sock.sendMessage(msg.key.remoteJid, {
             text:
               `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
-              `En este momento no estamos respondiendo\n\n` +
-              `Pero podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
+              `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
+              `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
               `Link: ${LINK_RESERVAS}\n\n` +
               `Nos vemos!`,
           });
