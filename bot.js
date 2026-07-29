@@ -64,6 +64,16 @@ async function startBot() {
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log('Conexión cerrada. Código:', statusCode, '| Motivo:', lastDisconnect?.error?.message);
 
+      // El código 515 (restart required) es un paso NORMAL justo después de
+      // vincular un dispositivo por primera vez — no es un error real ni
+      // indica que WhatsApp esté bloqueando nada. Reconectar casi al
+      // instante, sin el cooldown lento pensado para errores de verdad.
+      if (statusCode === DisconnectReason.restartRequired) {
+        console.log('Reinicio requerido (normal después de vincular). Reconectando ya...');
+        setTimeout(startBot, 500);
+        return;
+      }
+
       if (shouldReconnect) {
         reconnectAttempts++;
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
