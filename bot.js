@@ -19,7 +19,17 @@ let sock = null;
 let isReady = false;
 let latestQR = null;
 
-// ---------- Horario de atención ----------
+// ---------- Control de reintentos de conexión (cooldown) ----------
+// Evita el loop infinito de reconexión que puede hacer que WhatsApp
+// suspenda el número por comportamiento sospechoso (muchos intentos seguidos).
+// Arranca esperando 30 segundos entre intentos (no 5, para ser menos agresivo)
+// y va duplicando el tiempo de espera hasta un tope de 5 minutos.
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const BASE_DELAY_MS = 30000; // 30 segundos
+const MAX_DELAY_MS = 300000; // tope de 5 minutos entre intentos
+
+// ---------- Horario de atención (se muestra en textos, pero el aviso ahora es 24hs) ----------
 const HORA_APERTURA = 9;  // 9 am
 const HORA_CIERRE = 21;   // 9 pm
 // Ajustá este link al real de tu página de reservas
@@ -53,29 +63,49 @@ async function startBot() {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log('Conexión cerrada. Código:', statusCode, '| Motivo:', lastDisconnect?.error?.message);
+
       if (shouldReconnect) {
-        console.log('Reintentando en 5 segundos...');
-        setTimeout(startBot, 5000);
+        reconnectAttempts++;
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+          console.log(
+            `❌ Se alcanzaron los ${MAX_RECONNECT_ATTEMPTS} reintentos máximos. ` +
+            `El bot dejó de intentar conectar para no arriesgar el número. ` +
+            `Reiniciá el servicio manualmente (redeploy en Railway) cuando quieras retomar.`
+          );
+          return; // corta el loop, NO vuelve a llamar a startBot
+        }
+        // Backoff exponencial: 30s, 60s, 120s, 240s, 300s (tope)
+        const delay = Math.min(BASE_DELAY_MS * 2 ** (reconnectAttempts - 1), MAX_DELAY_MS);
+        console.log(
+          `Reintentando en ${delay / 1000} segundos... (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`
+        );
+        setTimeout(startBot, delay);
       } else {
-        console.log('Sesión cerrada (logout). Borrando credenciales viejas y generando un QR nuevo automáticamente...');
+        console.log('Sesión cerrada (logout). Borrando credenciales viejas...');
         const authPath = path.join(__dirname, 'auth_info');
         try {
           fs.rmSync(authPath, { recursive: true, force: true });
         } catch (e) {
           console.error('Error borrando credenciales viejas:', e);
         }
-        setTimeout(startBot, 3000);
+        console.log(
+          '⚠️ No se genera un QR nuevo automáticamente. ' +
+          'Reiniciá el servicio manualmente (redeploy en Railway) cuando quieras escanear uno nuevo.'
+        );
+        // Importante: ya NO se llama a startBot acá automáticamente.
+        // Esto evita el loop de "logout -> borra creds -> genera QR -> falla -> logout -> ..."
       }
     } else if (connection === 'open') {
       isReady = true;
       latestQR = null;
+      reconnectAttempts = 0; // resetea el contador apenas conecta bien
       console.log('✅ Bot de WhatsApp conectado y listo para confirmar turnos.');
     }
   });
   sock.ev.on('creds.update', saveCreds);
 
   // ---------- Escucha de mensajes entrantes ----------
-  // Hoy el bot solo mandaba mensajes; esto lo hace también RECIBIR y responder.
+  // Este mensaje se manda siempre (24/7), esté dentro o fuera del horario de atención.
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
@@ -85,22 +115,18 @@ async function startBot() {
       if (msg.key.remoteJid?.endsWith('@g.us')) continue;
       if (!msg.message) continue;
 
-      if (!estaDentroDeHorario()) {
-        try {
-          await sock.sendMessage(msg.key.remoteJid, {
-            text:
-              `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
-              `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
-              `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
-              `Link: ${LINK_RESERVAS}\n\n` +
-              `Nos vemos!`,
-          });
-        } catch (e) {
-          console.error('Error respondiendo fuera de horario:', e);
-        }
+      try {
+        await sock.sendMessage(msg.key.remoteJid, {
+          text:
+            `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
+            `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
+            `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
+            `Link: ${LINK_RESERVAS}\n\n` +
+            `Nos vemos!`,
+        });
+      } catch (e) {
+        console.error('Error respondiendo al mensaje entrante:', e);
       }
-      // Si querés que el bot también responda algo cuando SÍ está dentro de
-      // horario (ej. un saludo automático), acá es donde se agregaría.
     }
   });
 
