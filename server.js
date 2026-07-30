@@ -82,6 +82,15 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Servicio o barbero inválido.' });
     }
 
+    // Chequear que ese barbero no tenga ya un turno ocupado ese día y horario
+    const turnosExistentes = leerTurnos();
+    const yaOcupado = turnosExistentes.some(
+      t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
+    );
+    if (yaOcupado) {
+      return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
+    }
+
     const turno = {
       id: Date.now().toString(),
       nombre, whatsapp, barbero: barberoNombre,
@@ -120,6 +129,29 @@ app.post('/api/reservar', async (req, res) => {
   }
 });
 
+// Endpoint público (sin clave): solo devuelve qué horarios están ocupados
+// para un barbero y día puntual, sin exponer nombres ni teléfonos de clientes.
+app.get('/api/ocupados', (req, res) => {
+  const { dia, barbero } = req.query;
+  if (!dia || !barbero) {
+    return res.status(400).json({ error: 'Faltan parámetros dia y barbero.' });
+  }
+  const barberoNombre = BARBEROS[barbero];
+  if (!barberoNombre) {
+    return res.status(400).json({ error: 'Barbero inválido.' });
+  }
+  try {
+    const turnos = leerTurnos();
+    const ocupados = turnos
+      .filter(t => t.dia === dia && t.barbero === barberoNombre)
+      .map(t => t.horario);
+    res.json({ ocupados });
+  } catch (e) {
+    console.error('Error consultando horarios ocupados:', e);
+    res.status(500).json({ error: 'No se pudo consultar la disponibilidad.' });
+  }
+});
+
 app.get('/api/turnos', (req, res) => {
   if (req.query.key !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
@@ -129,6 +161,24 @@ app.get('/api/turnos', (req, res) => {
   } catch (e) {
     console.error('Error leyendo turnos:', e);
     res.status(500).json({ error: 'No se pudieron leer los turnos.' });
+  }
+});
+
+app.delete('/api/turnos/:id', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    const turnos = leerTurnos();
+    const nuevos = turnos.filter(t => t.id !== req.params.id);
+    if (nuevos.length === turnos.length) {
+      return res.status(404).json({ error: 'Turno no encontrado.' });
+    }
+    guardarTodosLosTurnos(nuevos);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Error borrando turno:', e);
+    res.status(500).json({ error: 'No se pudo borrar el turno.' });
   }
 });
 
