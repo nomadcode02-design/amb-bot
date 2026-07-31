@@ -28,6 +28,9 @@ app.use(express.json());
 const TURNOS_FILE = path.join(__dirname, 'turnos.json');
 if (!fs.existsSync(TURNOS_FILE)) fs.writeFileSync(TURNOS_FILE, '[]');
 
+const BLOQUEOS_FILE = path.join(__dirname, 'bloqueos.json');
+if (!fs.existsSync(BLOQUEOS_FILE)) fs.writeFileSync(BLOQUEOS_FILE, '[]');
+
 const OWNER_WHATSAPP = process.env.OWNER_WHATSAPP; // ej: 2646023107
 const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave'; // clave del panel de control
 
@@ -41,6 +44,26 @@ function guardarTurno(turno) {
 }
 function guardarTodosLosTurnos(turnos) {
   fs.writeFileSync(TURNOS_FILE, JSON.stringify(turnos, null, 2));
+}
+
+function leerBloqueos() {
+  return JSON.parse(fs.readFileSync(BLOQUEOS_FILE, 'utf-8'));
+}
+function guardarBloqueos(bloqueos) {
+  fs.writeFileSync(BLOQUEOS_FILE, JSON.stringify(bloqueos, null, 2));
+}
+
+// Genera la lista de horarios en punto entre horaInicio (incluido) y
+// horaFin (excluido). Ej: "14:00" a "16:00" -> ["14:00", "15:00"]
+function generarHorariosEntre(horaInicio, horaFin) {
+  const horarios = [];
+  let h = Number(horaInicio.split(':')[0]);
+  const hFin = Number(horaFin.split(':')[0]);
+  while (h < hFin) {
+    horarios.push(`${String(h).padStart(2, '0')}:00`);
+    h++;
+  }
+  return horarios;
 }
 
 function formatearFecha(diaISO) {
@@ -89,6 +112,15 @@ app.post('/api/reservar', async (req, res) => {
     );
     if (yaOcupado) {
       return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
+    }
+
+    // Chequear que ese horario no haya sido bloqueado desde el panel
+    const bloqueos = leerBloqueos();
+    const estaBloqueado = bloqueos.some(
+      b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
+    );
+    if (estaBloqueado) {
+      return res.status(409).json({ error: 'Ese horario no está disponible. Elegí otro.' });
     }
 
     const turno = {
@@ -142,9 +174,16 @@ app.get('/api/ocupados', (req, res) => {
   }
   try {
     const turnos = leerTurnos();
-    const ocupados = turnos
+    const ocupadosPorTurno = turnos
       .filter(t => t.dia === dia && t.barbero === barberoNombre)
       .map(t => t.horario);
+
+    const bloqueos = leerBloqueos();
+    const ocupadosPorBloqueo = bloqueos
+      .filter(b => b.dia === dia && (b.barbero === 'Todos' || b.barbero === barbero))
+      .map(b => b.horario);
+
+    const ocupados = [...new Set([...ocupadosPorTurno, ...ocupadosPorBloqueo])];
     res.json({ ocupados });
   } catch (e) {
     console.error('Error consultando horarios ocupados:', e);
@@ -161,6 +200,69 @@ app.get('/api/turnos', (req, res) => {
   } catch (e) {
     console.error('Error leyendo turnos:', e);
     res.status(500).json({ error: 'No se pudieron leer los turnos.' });
+  }
+});
+
+// ---------- Bloqueo de horarios (panel de control) ----------
+app.get('/api/bloqueos', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    res.json(leerBloqueos());
+  } catch (e) {
+    console.error('Error leyendo bloqueos:', e);
+    res.status(500).json({ error: 'No se pudieron leer los bloqueos.' });
+  }
+});
+
+app.post('/api/bloqueos', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    const { dia, barbero, horaInicio, horaFin } = req.body;
+    if (!dia || !barbero || !horaInicio || !horaFin) {
+      return res.status(400).json({ error: 'Faltan datos del bloqueo.' });
+    }
+    if (horaFin <= horaInicio) {
+      return res.status(400).json({ error: 'El horario "hasta" tiene que ser posterior al "desde".' });
+    }
+
+    const horarios = generarHorariosEntre(horaInicio, horaFin);
+    if (horarios.length === 0) {
+      return res.status(400).json({ error: 'Rango de horario inválido.' });
+    }
+
+    const bloqueos = leerBloqueos();
+    const grupoId = Date.now().toString();
+    horarios.forEach(horario => {
+      bloqueos.push({ id: `${grupoId}-${horario}`, grupoId, dia, barbero, horario });
+    });
+    guardarBloqueos(bloqueos);
+
+    res.json({ ok: true, grupoId });
+  } catch (e) {
+    console.error('Error creando bloqueo:', e);
+    res.status(500).json({ error: 'No se pudo crear el bloqueo.' });
+  }
+});
+
+app.delete('/api/bloqueos/:grupoId', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    const bloqueos = leerBloqueos();
+    const nuevos = bloqueos.filter(b => b.grupoId !== req.params.grupoId);
+    if (nuevos.length === bloqueos.length) {
+      return res.status(404).json({ error: 'Bloqueo no encontrado.' });
+    }
+    guardarBloqueos(nuevos);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Error borrando bloqueo:', e);
+    res.status(500).json({ error: 'No se pudo borrar el bloqueo.' });
   }
 });
 
