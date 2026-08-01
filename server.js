@@ -6,7 +6,7 @@ const path = require('path');
 const QRCode = require('qrcode');
 const cron = require('node-cron');
 const { startBot, sendMessage, getLatestQR, isConnected } = require('./bot');
-const { SERVICIOS, BARBEROS } = require('./data');
+const { SERVICIOS, BARBEROS, HORARIOS_POR_DIA } = require('./data');
 
 // ---------- Red de seguridad: errores no capturados ----------
 // Sin esto, un solo error inesperado en cualquier parte del código (una
@@ -49,21 +49,52 @@ function guardarTodosLosTurnos(turnos) {
 function leerBloqueos() {
   return JSON.parse(fs.readFileSync(BLOQUEOS_FILE, 'utf-8'));
 }
-function guardarBloqueos(bloqueos) {
+function guardarTodosLosBloqueos(bloqueos) {
   fs.writeFileSync(BLOQUEOS_FILE, JSON.stringify(bloqueos, null, 2));
 }
 
-// Genera la lista de horarios en punto entre horaInicio (incluido) y
-// horaFin (excluido). Ej: "14:00" a "16:00" -> ["14:00", "15:00"]
-function generarHorariosEntre(horaInicio, horaFin) {
+// Genera la lista de horarios en punta (formato "HH:00") entre horaInicio
+// (inclusive) y horaFin (exclusive), en pasos de 1 hora. Ej: "14:00" a "17:00"
+// devuelve ["14:00","15:00","16:00"].
+function generarRangoHorarios(horaInicio, horaFin) {
+  const [hIni, mIni] = horaInicio.split(':').map(Number);
+  const [hFin, mFin] = horaFin.split(':').map(Number);
+  let t = hIni * 60 + mIni;
+  const fin = hFin * 60 + mFin;
   const horarios = [];
-  let h = Number(horaInicio.split(':')[0]);
-  const hFin = Number(horaFin.split(':')[0]);
-  while (h < hFin) {
-    horarios.push(`${String(h).padStart(2, '0')}:00`);
-    h++;
+  while (t < fin) {
+    const hh = String(Math.floor(t / 60)).padStart(2, '0');
+    const mm = String(t % 60).padStart(2, '0');
+    horarios.push(`${hh}:${mm}`);
+    t += 60;
   }
   return horarios;
+}
+
+// Un turno o una consulta "aplica" a un bloqueo si el bloqueo es para "Todos"
+// los barberos, o si es específicamente para ese barbero.
+function bloqueoAplicaABarbero(bloqueo, barberoNombreOClave) {
+  return bloqueo.barbero === 'Todos' || bloqueo.barbero === barberoNombreOClave;
+}
+
+// Chequea si un horario ("HH:MM") cae dentro de alguna franja de atención
+// del día de la semana que corresponda a "dia" (formato "YYYY-MM-DD").
+// Soporta días con turno partido (varias franjas), como lunes a jueves.
+function horarioDentroDeAtencion(dia, horario) {
+  const fecha = new Date(`${dia}T00:00:00`);
+  const dow = fecha.getDay();
+  const franjas = HORARIOS_POR_DIA[dow] || [];
+
+  const [h, m] = horario.split(':').map(Number);
+  const minutosPedidos = h * 60 + m;
+
+  return franjas.some(({ apertura, cierre }) => {
+    const [hIni, mIni] = apertura.split(':').map(Number);
+    const [hFin, mFin] = cierre.split(':').map(Number);
+    const minIni = hIni * 60 + mIni;
+    const minFin = hFin * 60 + mFin;
+    return minutosPedidos >= minIni && minutosPedidos < minFin;
+  });
 }
 
 function formatearFecha(diaISO) {
@@ -105,6 +136,12 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Servicio o barbero inválido.' });
     }
 
+    // Chequear que el horario pedido esté dentro de la franja de atención de ese día
+    // (soporta turno partido, ej: lunes a jueves cerrado de 13 a 17hs)
+    if (!horarioDentroDeAtencion(dia, horario)) {
+      return res.status(400).json({ error: 'Ese horario está fuera del horario de atención.' });
+    }
+
     // Chequear que ese barbero no tenga ya un turno ocupado ese día y horario
     const turnosExistentes = leerTurnos();
     const yaOcupado = turnosExistentes.some(
@@ -114,13 +151,14 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
     }
 
-    // Chequear que ese horario no haya sido bloqueado desde el panel
+    // Chequear que ese horario no esté bloqueado manualmente desde el panel
+    // (ej: salida del barbero, feriado puntual, etc.)
     const bloqueos = leerBloqueos();
     const estaBloqueado = bloqueos.some(
-      b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
+      b => b.dia === dia && b.horario === horario && bloqueoAplicaABarbero(b, barberoNombre)
     );
     if (estaBloqueado) {
-      return res.status(409).json({ error: 'Ese horario no está disponible. Elegí otro.' });
+      return res.status(409).json({ error: 'Ese horario no está disponible. Elegí otro horario.' });
     }
 
     const turno = {
@@ -130,7 +168,6 @@ app.post('/api/reservar', async (req, res) => {
       dia, horario,
       creado: new Date().toISOString(),
       recordatorioEnviado: false, // <-- nuevo campo para el recordatorio
-      completado: false, // <-- se pone en true cuando el barbero confirma que cortó de verdad
     };
     guardarTurno(turno);
 
@@ -175,16 +212,17 @@ app.get('/api/ocupados', (req, res) => {
   }
   try {
     const turnos = leerTurnos();
-    const ocupadosPorTurno = turnos
+    const ocupadosPorTurnos = turnos
       .filter(t => t.dia === dia && t.barbero === barberoNombre)
       .map(t => t.horario);
 
     const bloqueos = leerBloqueos();
     const ocupadosPorBloqueo = bloqueos
-      .filter(b => b.dia === dia && (b.barbero === 'Todos' || b.barbero === barbero))
+      .filter(b => b.dia === dia && bloqueoAplicaABarbero(b, barberoNombre))
       .map(b => b.horario);
 
-    const ocupados = [...new Set([...ocupadosPorTurno, ...ocupadosPorBloqueo])];
+    // Set para no repetir horarios si coinciden turno y bloqueo
+    const ocupados = [...new Set([...ocupadosPorTurnos, ...ocupadosPorBloqueo])];
     res.json({ ocupados });
   } catch (e) {
     console.error('Error consultando horarios ocupados:', e);
@@ -204,7 +242,29 @@ app.get('/api/turnos', (req, res) => {
   }
 });
 
-// ---------- Bloqueo de horarios (panel de control) ----------
+app.delete('/api/turnos/:id', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    const turnos = leerTurnos();
+    const nuevos = turnos.filter(t => t.id !== req.params.id);
+    if (nuevos.length === turnos.length) {
+      return res.status(404).json({ error: 'Turno no encontrado.' });
+    }
+    guardarTodosLosTurnos(nuevos);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Error borrando turno:', e);
+    res.status(500).json({ error: 'No se pudo borrar el turno.' });
+  }
+});
+
+// ---------- Bloqueo manual de horarios (desde el panel) ----------
+// Sirve para casos como "los chicos salen de 14 a 15hs": ese rango queda
+// sin poder reservarse (el formulario lo tacha) y no genera turnos ni
+// mensajes del bot, porque no es un turno real, es solo un bloqueo.
+
 app.get('/api/bloqueos', (req, res) => {
   if (req.query.key !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
@@ -226,21 +286,22 @@ app.post('/api/bloqueos', (req, res) => {
     if (!dia || !barbero || !horaInicio || !horaFin) {
       return res.status(400).json({ error: 'Faltan datos del bloqueo.' });
     }
-    if (horaFin <= horaInicio) {
-      return res.status(400).json({ error: 'El horario "hasta" tiene que ser posterior al "desde".' });
+
+    const barberoGuardado = barbero === 'Todos' ? 'Todos' : BARBEROS[barbero];
+    if (!barberoGuardado) {
+      return res.status(400).json({ error: 'Barbero inválido.' });
     }
 
-    const horarios = generarHorariosEntre(horaInicio, horaFin);
+    const horarios = generarRangoHorarios(horaInicio, horaFin);
     if (horarios.length === 0) {
-      return res.status(400).json({ error: 'Rango de horario inválido.' });
+      return res.status(400).json({ error: 'El rango de horario no es válido (verificá que "Hasta" sea posterior a "Desde").' });
     }
+
+    const grupoId = Date.now().toString();
+    const nuevosBloqueos = horarios.map(horario => ({ grupoId, dia, barbero: barberoGuardado, horario }));
 
     const bloqueos = leerBloqueos();
-    const grupoId = Date.now().toString();
-    horarios.forEach(horario => {
-      bloqueos.push({ id: `${grupoId}-${horario}`, grupoId, dia, barbero, horario });
-    });
-    guardarBloqueos(bloqueos);
+    guardarTodosLosBloqueos(bloqueos.concat(nuevosBloqueos));
 
     res.json({ ok: true, grupoId });
   } catch (e) {
@@ -259,51 +320,11 @@ app.delete('/api/bloqueos/:grupoId', (req, res) => {
     if (nuevos.length === bloqueos.length) {
       return res.status(404).json({ error: 'Bloqueo no encontrado.' });
     }
-    guardarBloqueos(nuevos);
+    guardarTodosLosBloqueos(nuevos);
     res.json({ ok: true });
   } catch (e) {
     console.error('Error borrando bloqueo:', e);
     res.status(500).json({ error: 'No se pudo borrar el bloqueo.' });
-  }
-});
-
-// Marca (o desmarca) un turno como "corte realmente hecho". Solo los turnos
-// confirmados así cuentan para la caja de cada barbero en el panel.
-app.patch('/api/turnos/:id/completar', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
-    return res.status(401).json({ error: 'No autorizado.' });
-  }
-  try {
-    const turnos = leerTurnos();
-    const turno = turnos.find(t => t.id === req.params.id);
-    if (!turno) {
-      return res.status(404).json({ error: 'Turno no encontrado.' });
-    }
-    const completado = req.body && typeof req.body.completado === 'boolean' ? req.body.completado : true;
-    turno.completado = completado;
-    guardarTodosLosTurnos(turnos);
-    res.json({ ok: true, turno });
-  } catch (e) {
-    console.error('Error confirmando turno:', e);
-    res.status(500).json({ error: 'No se pudo actualizar el turno.' });
-  }
-});
-
-app.delete('/api/turnos/:id', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
-    return res.status(401).json({ error: 'No autorizado.' });
-  }
-  try {
-    const turnos = leerTurnos();
-    const nuevos = turnos.filter(t => t.id !== req.params.id);
-    if (nuevos.length === turnos.length) {
-      return res.status(404).json({ error: 'Turno no encontrado.' });
-    }
-    guardarTodosLosTurnos(nuevos);
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('Error borrando turno:', e);
-    res.status(500).json({ error: 'No se pudo borrar el turno.' });
   }
 });
 
