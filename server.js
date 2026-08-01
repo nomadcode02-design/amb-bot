@@ -130,6 +130,7 @@ app.post('/api/reservar', async (req, res) => {
       dia, horario,
       creado: new Date().toISOString(),
       recordatorioEnviado: false, // <-- nuevo campo para el recordatorio
+      completado: false, // <-- se pone en true cuando el barbero confirma que cortó de verdad
     };
     guardarTurno(turno);
 
@@ -263,6 +264,28 @@ app.delete('/api/bloqueos/:grupoId', (req, res) => {
   } catch (e) {
     console.error('Error borrando bloqueo:', e);
     res.status(500).json({ error: 'No se pudo borrar el bloqueo.' });
+  }
+});
+
+// Marca (o desmarca) un turno como "corte realmente hecho". Solo los turnos
+// confirmados así cuentan para la caja de cada barbero en el panel.
+app.patch('/api/turnos/:id/completar', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    const turnos = leerTurnos();
+    const turno = turnos.find(t => t.id === req.params.id);
+    if (!turno) {
+      return res.status(404).json({ error: 'Turno no encontrado.' });
+    }
+    const completado = req.body && typeof req.body.completado === 'boolean' ? req.body.completado : true;
+    turno.completado = completado;
+    guardarTodosLosTurnos(turnos);
+    res.json({ ok: true, turno });
+  } catch (e) {
+    console.error('Error confirmando turno:', e);
+    res.status(500).json({ error: 'No se pudo actualizar el turno.' });
   }
 });
 
