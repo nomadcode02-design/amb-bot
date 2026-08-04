@@ -181,7 +181,7 @@ app.post('/api/reservar', async (req, res) => {
       `🕐 Hora: ${horario} hs\n` +
       `💰 Precio: ${servicioInfo.precio}\n\n` +
       `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
-      `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
+      `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.`;
 
     await sendMessage(whatsapp, mensajeCliente);
 
