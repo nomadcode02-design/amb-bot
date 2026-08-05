@@ -40,7 +40,31 @@ function estaDentroDeHorario(fecha = new Date()) {
   return hora >= HORA_APERTURA && hora < HORA_CIERRE;
 }
 
+// ---------- Limpieza ÚNICA de una sesión vieja que haya quedado pegada ----------
+// Esto corre UNA sola vez (se marca con un archivo aparte) para borrar la
+// carpeta auth_info con la sesión de prueba. Después de que esto se ejecute
+// una vez y confirmes que anda bien, se puede sacar este bloque del código.
+function limpiarSesionViejaUnaVez() {
+  const marker = path.join(__dirname, '.sesion-vieja-borrada');
+  const authPath = path.join(__dirname, 'auth_info');
+  if (fs.existsSync(marker)) return; // ya se hizo, no repetir
+  if (fs.existsSync(authPath)) {
+    try {
+      fs.rmSync(authPath, { recursive: true, force: true });
+      console.log('🧹 Se borró una sesión vieja de WhatsApp que había quedado guardada.');
+    } catch (e) {
+      console.error('Error borrando la sesión vieja:', e);
+    }
+  }
+  try {
+    fs.writeFileSync(marker, new Date().toISOString());
+  } catch (e) {
+    console.error('Error guardando la marca de limpieza:', e);
+  }
+}
+
 async function startBot() {
+  limpiarSesionViejaUnaVez();
   const { state, saveCreds } = await useMultiFileAuthState(
     path.join(__dirname, 'auth_info')
   );
