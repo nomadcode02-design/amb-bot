@@ -260,6 +260,31 @@ app.delete('/api/turnos/:id', (req, res) => {
   }
 });
 
+// Marca un turno como completado (o lo desmarca), para el panel de control.
+// Esto es lo que hace que se sumen/resten los montos cuando tocás el check.
+app.patch('/api/turnos/:id/completar', (req, res) => {
+  if (req.query.key !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  try {
+    const { completado } = req.body;
+    if (typeof completado !== 'boolean') {
+      return res.status(400).json({ error: 'Falta el campo "completado" (true/false).' });
+    }
+    const turnos = leerTurnos();
+    const turno = turnos.find(t => t.id === req.params.id);
+    if (!turno) {
+      return res.status(404).json({ error: 'Turno no encontrado.' });
+    }
+    turno.completado = completado;
+    guardarTodosLosTurnos(turnos);
+    res.json({ ok: true, turno });
+  } catch (e) {
+    console.error('Error actualizando estado del turno:', e);
+    res.status(500).json({ error: 'No se pudo actualizar el turno.' });
+  }
+});
+
 // ---------- Bloqueo manual de horarios (desde el panel) ----------
 // Sirve para casos como "los chicos salen de 14 a 15hs": ese rango queda
 // sin poder reservarse (el formulario lo tacha) y no genera turnos ni
