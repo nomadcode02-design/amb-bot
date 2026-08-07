@@ -149,6 +149,8 @@ async function startBot() {
       if (msg.key.remoteJid?.endsWith('@g.us')) continue;
       if (!msg.message) continue;
 
+      console.log(`📩 Mensaje entrante de ${msg.key.remoteJid}, respondiendo...`);
+
       try {
         await sock.sendMessage(msg.key.remoteJid, {
           text:
@@ -158,6 +160,7 @@ async function startBot() {
             `Link: ${LINK_RESERVAS}\n\n` +
             `Nos vemos!`,
         });
+        console.log(`✅ Respuesta automática enviada a ${msg.key.remoteJid}`);
       } catch (e) {
         console.error('Error respondiendo al mensaje entrante:', e);
       }
@@ -181,7 +184,9 @@ async function sendMessage(numero, texto) {
     throw new Error('El bot todavía no está conectado a WhatsApp.');
   }
   const jid = toWhatsAppId(numero);
-  await sock.sendMessage(jid, { text: texto });
+  console.log(`📤 Intentando mandar mensaje a ${jid}...`);
+  const result = await sock.sendMessage(jid, { text: texto });
+  console.log(`✅ sock.sendMessage() terminó sin errores para ${jid}. ID del mensaje: ${result?.key?.id || 'desconocido'}`);
 }
 
 function getLatestQR() {
