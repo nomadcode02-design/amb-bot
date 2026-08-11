@@ -18,6 +18,14 @@ let sock = null;
 let isReady = false;
 let latestQR = null;
 
+// Formatea el número a formato de WhatsApp
+function toWhatsAppId(numero) {
+  let n = String(numero).replace(/[^\d]/g, '');
+  if (!n.startsWith('54')) n = '54' + n;
+  if (!n.startsWith('549')) n = '549' + n.slice(2);
+  return `${n}@s.whatsapp.net`;
+}
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(
     path.join(__dirname, 'auth_info')
@@ -53,20 +61,18 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ---------- Escucha de mensajes ----------
+  // ---------- Escucha de mensajes entrantes ----------
   sock.ev.on('messages.upsert', async (event) => {
     if (event.type !== 'notify') return;
 
     for (const msg of event.messages) {
-      // Ignorar mensajes enviados por el propio bot o sin contenido
       if (msg.key.fromMe || !msg.message) continue;
 
       const remoteJid = msg.key.remoteJid;
-      if (!remoteJid || remoteJid.endsWith('@g.us')) continue; // Ignorar grupos
+      if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
 
       console.log(`📩 Mensaje recibido de ${remoteJid}`);
 
-      // Mensaje exacto de confirmación
       const textoConfirmacion = 
 `✅ Turno confirmado - AMB BARBERS
 
@@ -83,7 +89,6 @@ Hola tiziano lobos! Tu turno quedó agendado:
 Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
 
       try {
-        // Al incluir { quoted: msg } WhatsApp rutea correctamente el mensaje enviado a direcciones @lid
         await sock.sendMessage(
           remoteJid, 
           { text: textoConfirmacion }, 
@@ -100,13 +105,26 @@ Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
   return sock;
 }
 
+// Función requerida por server.js para enviar reservas y recordatorios
+async function sendMessage(numero, texto) {
+  if (!sock || !isReady) {
+    throw new Error('El bot de WhatsApp aún no está conectado.');
+  }
+
+  const jid = (typeof numero === 'string' && (numero.endsWith('@s.whatsapp.net') || numero.endsWith('@lid')))
+    ? numero
+    : toWhatsAppId(numero);
+
+  return await sock.sendMessage(jid, { text: texto });
+}
+
 function getLatestQR() { return latestQR; }
 function isConnected() { return isReady; }
 
 module.exports = {
   startBot,
+  sendMessage,
+  toWhatsAppId,
   getLatestQR,
   isConnected,
 };
-
-startBot();
