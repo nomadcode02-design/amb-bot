@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const QRCode = require('qrcode');
 const cron = require('node-cron');
-const { startBot, sendMessage, getLatestQR, isConnected } = require('./bot');
+const { startBot, sendMessage, armarLinkWhatsApp, resolverJid, setOnMensaje, getLatestQR, isConnected } = require('./bot');
 const { SERVICIOS, BARBEROS } = require('./data');
 
 process.on('uncaughtException', (err) => {
@@ -75,6 +75,41 @@ function minutosDeAvisoPara(turno) {
   return 5;
 }
 
+function construirMensajeConfirmacion(turno) {
+  const fechaLinda = formatearFecha(turno.dia);
+  return (
+    `✅ *Turno confirmado - AMB BARBERS*\n\n` +
+    `Hola ${turno.nombre}! Tu turno quedó agendado:\n\n` +
+    `💈 Barbero: ${turno.barbero}\n` +
+    `✂️ Servicio: ${turno.servicio}\n` +
+    `📅 Día: ${fechaLinda}\n` +
+    `🕐 Hora: ${turno.horario} hs\n` +
+    `💰 Precio: ${turno.precio}\n\n` +
+    `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
+    `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`
+  );
+}
+
+// Busca, entre los turnos SIN confirmar todavía, cuál corresponde al
+// número que acaba de escribirle al bot. Resuelve el JID de cada turno
+// candidato y lo compara contra el JID entrante.
+async function buscarTurnoPorJid(remoteJid) {
+  const turnos = leerTurnos();
+  const candidatos = turnos
+    .filter(t => !t.confirmacionEnviada)
+    .sort((a, b) => new Date(b.creado) - new Date(a.creado)); // más recientes primero
+
+  for (const turno of candidatos) {
+    try {
+      const jid = await resolverJid(turno.whatsapp);
+      if (jid === remoteJid) return turno;
+    } catch {
+      // si no se puede resolver ese número, seguimos con el próximo candidato
+    }
+  }
+  return null;
+}
+
 app.post('/api/reservar', async (req, res) => {
   try {
     const { nombre, whatsapp, barbero, servicio, dia, horario } = req.body;
@@ -117,19 +152,24 @@ app.post('/api/reservar', async (req, res) => {
     guardarTurno(turno);
 
     const fechaLinda = formatearFecha(dia);
-    const mensajeCliente =
-      `✅ *Turno confirmado - AMB BARBERS*\n\n` +
-      `Hola ${nombre}! Tu turno quedó agendado:\n\n` +
-      `💈 Barbero: ${barberoNombre}\n` +
-      `✂️ Servicio: ${servicioInfo.nombre}\n` +
-      `📅 Día: ${fechaLinda}\n` +
-      `🕐 Hora: ${horario} hs\n` +
-      `💰 Precio: ${servicioInfo.precio}\n\n` +
-      `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
-      `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
+    const mensajeCliente = construirMensajeConfirmacion(turno);
 
-    // Enviar mensaje al cliente
-    await sendMessage(whatsapp, mensajeCliente);
+    // El cliente va a escribirle al bot desde el link de WhatsApp del
+    // formulario, y ahí es donde se manda la confirmación (ver setOnMensaje
+    // más abajo). Igual probamos mandarla ahora por si ya escribió antes
+    // y la ventana de 24hs ya está abierta.
+    let whatsappLink = armarLinkWhatsApp(whatsapp, `Hola! Quiero confirmar mi turno para ${fechaLinda} a las ${horario} hs 💈`);
+    let mensajeEnviado = false;
+    try {
+      const resultado = await sendMessage(whatsapp, mensajeCliente);
+      mensajeEnviado = resultado.enviado;
+      if (mensajeEnviado) {
+        turno.confirmacionEnviada = true;
+        guardarTodosLosTurnos(leerTurnos().map(t => t.id === turno.id ? turno : t));
+      }
+    } catch (e) {
+      console.error('⚠️ No se pudo enviar confirmación al cliente todavía (esperará a que escriba):', e.message);
+    }
 
     // Enviar mensaje al dueño con protección de errores por si el número falla
     if (OWNER_WHATSAPP) {
@@ -143,7 +183,7 @@ app.post('/api/reservar', async (req, res) => {
       }
     }
 
-    res.json({ ok: true, turno });
+    res.json({ ok: true, turno, mensajeEnviado, whatsappLink });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || 'Error interno al procesar la reserva.' });
@@ -325,6 +365,9 @@ app.get('/qr', async (req, res) => {
 
 app.get('/', (req, res) => res.send('AMB Barbers bot API OK'));
 
+// Recordatorios: solo se mandan si el cliente escribió al bot en las
+// últimas 24hs (ventana abierta). Si no, se saltea silenciosamente:
+// no queremos mandar mensajes proactivos a quien nunca inició contacto.
 cron.schedule('* * * * *', async () => {
  try {
   const ahora = new Date();
@@ -339,16 +382,20 @@ cron.schedule('* * * * *', async () => {
     const minutosDeAviso = minutosDeAvisoPara(turno);
 
     if (minutosFaltantes <= minutosDeAviso && minutosFaltantes > 0) {
-      console.log(`⏰ Mandando recordatorio a ${turno.nombre} (${turno.whatsapp})`);
+      console.log(`⏰ Intentando recordatorio a ${turno.nombre} (${turno.whatsapp})`);
       try {
-        await sendMessage(
+        const resultado = await sendMessage(
           turno.whatsapp,
           `⏰ ¡Hola ${turno.nombre}! Te recordamos que tenés un turno hoy a las ${turno.horario} hs ` +
           `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!`
         );
-        turno.recordatorioEnviado = true;
-        huboCambios = true;
-        console.log(`✅ Recordatorio enviado a ${turno.nombre} (${turno.whatsapp})`);
+        if (resultado.enviado) {
+          turno.recordatorioEnviado = true;
+          huboCambios = true;
+          console.log(`✅ Recordatorio enviado a ${turno.nombre} (${turno.whatsapp})`);
+        } else {
+          console.log(`⏸️ Recordatorio no enviado a ${turno.nombre}: ventana de 24hs cerrada.`);
+        }
       } catch (e) {
         console.error('Error enviando recordatorio:', e);
       }
@@ -359,6 +406,26 @@ cron.schedule('* * * * *', async () => {
  } catch (e) {
    console.error('Error general en el cron de recordatorios:', e);
  }
+});
+
+// Cuando alguien le escribe al bot (típicamente desde el link de WhatsApp
+// del formulario de reservas), buscamos si tiene un turno pendiente de
+// confirmar y le contestamos con los datos reales de SU turno.
+setOnMensaje(async (remoteJid, textoRecibido) => {
+  const turno = await buscarTurnoPorJid(remoteJid);
+
+  if (turno) {
+    turno.confirmacionEnviada = true;
+    guardarTodosLosTurnos(leerTurnos().map(t => t.id === turno.id ? turno : t));
+    return construirMensajeConfirmacion(turno);
+  }
+
+  // No encontramos ningún turno pendiente para este número.
+  return (
+    `¡Hola! Gracias por escribirnos a AMB Barbers 💈\n\n` +
+    `No encontramos ningún turno pendiente asociado a este número. ` +
+    `Si querés reservar, hacelo desde nuestra web y después escribinos por acá para confirmar.`
+  );
 });
 
 const PORT = process.env.PORT || 3000;
