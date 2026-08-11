@@ -91,7 +91,6 @@ function construirMensajeConfirmacion(turno) {
     `🕐 Hora: ${turno.horario} hs\n` +
     `💰 Precio: ${turno.precio}\n\n` +
     `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
-    `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.\n\n` +
     `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.\n\n` +
     `¡Nos vemos pronto!`
   );
