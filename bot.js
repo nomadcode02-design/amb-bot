@@ -133,6 +133,7 @@ async function startBot() {
         '';
 
       console.log(`📩 Mensaje recibido de: ${remoteJid} — "${texto}"`);
+      console.log('🔎 msg.key completo:', JSON.stringify(msg.key));
 
       // Registramos el contacto: esto abre la ventana de 24hs para
       // poder mandarle confirmaciones/recordatorios de forma proactiva.
@@ -140,15 +141,23 @@ async function startBot() {
 
       if (!onMensajeEntrante) continue;
 
+      // Algunas cuentas @lid tienen un JID "alternativo" (el número real,
+      // @s.whatsapp.net) que Baileys expone en remoteJidAlt cuando lo conoce.
+      // Mandar ahí en vez de al @lid suele solucionar el problema de que
+      // el mensaje se "entrega" según el log pero nunca llega al teléfono.
+      const jidDestino = msg.key.remoteJidAlt || remoteJid;
+
       try {
         const respuesta = await onMensajeEntrante(remoteJid, texto);
         if (!respuesta) continue; // server.js decidió no responder nada
 
         await delayAleatorio();
-        await sock.sendMessage(remoteJid, { text: respuesta }, { quoted: msg });
-        console.log(`✅ Respuesta entregada con éxito a ${remoteJid}`);
+        // Sin "quoted": citar mensajes @lid es una causa conocida de que
+        // Baileys reporte éxito pero WhatsApp no entregue nada.
+        await sock.sendMessage(jidDestino, { text: respuesta });
+        console.log(`✅ Respuesta entregada con éxito a ${jidDestino}`);
       } catch (err) {
-        console.error(`❌ Error procesando/entregando mensaje a ${remoteJid}:`, err);
+        console.error(`❌ Error procesando/entregando mensaje a ${jidDestino}:`, err);
       }
     }
   });
