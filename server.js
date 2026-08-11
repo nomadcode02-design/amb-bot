@@ -96,14 +96,13 @@ function construirMensajeConfirmacion(turno) {
   );
 }
 
-// Busca, entre los turnos SIN confirmar todavía, cuál corresponde al
-// número que acaba de escribirle al bot. Resuelve el JID de cada turno
-// candidato y lo compara contra el JID entrante (en cualquiera de sus
-// dos formas: @lid o @s.whatsapp.net).
+// Busca, entre TODOS los turnos (ya se haya mandado la confirmación o no),
+// cuál corresponde al número que acaba de escribirle al bot. Así, si alguien
+// ya recibió su confirmación y escribe igual "por las dudas", le volvemos a
+// mostrar los datos de su turno en vez de decirle que no encontramos nada.
 async function buscarTurnoPorJid(remoteJid, remoteJidAlt) {
   const turnos = leerTurnos();
   const candidatos = turnos
-    .filter(t => !t.confirmacionEnviada)
     .sort((a, b) => new Date(b.creado) - new Date(a.creado)); // más recientes primero
 
   console.log(`🔍 Buscando turno para remoteJid=${remoteJid} remoteJidAlt=${remoteJidAlt}. Candidatos sin confirmar: ${candidatos.length}`);
