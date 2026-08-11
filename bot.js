@@ -54,9 +54,16 @@ function leerContactos() {
   }
 }
 
-function registrarContacto(jid) {
+function registrarContacto(jid, jidAlt) {
   const contactos = leerContactos();
-  contactos[jid] = new Date().toISOString();
+  const ahora = new Date().toISOString();
+  // Guardamos bajo las dos formas del JID (@lid y @s.whatsapp.net) para que
+  // no importe cuál de las dos se use después al consultar la ventana:
+  // Baileys puede identificar al mismo contacto de cualquiera de las dos
+  // formas según el contexto, y si solo guardamos una, la otra siempre da
+  // "false" aunque el contacto sí haya escrito.
+  contactos[jid] = ahora;
+  if (jidAlt) contactos[jidAlt] = ahora;
   fs.writeFileSync(CONTACTOS_FILE, JSON.stringify(contactos, null, 2));
 }
 
@@ -156,6 +163,7 @@ async function startBot() {
 
       const remoteJid = msg.key.remoteJid;
       if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
+      const remoteJidAlt = msg.key.remoteJidAlt || null;
 
       const texto =
         msg.message.conversation ||
@@ -165,9 +173,10 @@ async function startBot() {
       console.log(`📩 Mensaje recibido de: ${remoteJid} — "${texto}"`);
       console.log('🔎 msg.key completo:', JSON.stringify(msg.key));
 
-      // Registramos el contacto: esto abre la ventana de 24hs para
-      // poder mandarle confirmaciones/recordatorios de forma proactiva.
-      registrarContacto(remoteJid);
+      // Registramos el contacto (bajo las dos formas de JID): esto abre
+      // la ventana de 24hs para poder mandarle confirmaciones/recordatorios
+      // de forma proactiva.
+      registrarContacto(remoteJid, remoteJidAlt);
 
       if (!onMensajeEntrante) continue;
 
@@ -175,10 +184,10 @@ async function startBot() {
       // @s.whatsapp.net) que Baileys expone en remoteJidAlt cuando lo conoce.
       // Mandar ahí en vez de al @lid suele solucionar el problema de que
       // el mensaje se "entrega" según el log pero nunca llega al teléfono.
-      const jidDestino = msg.key.remoteJidAlt || remoteJid;
+      const jidDestino = remoteJidAlt || remoteJid;
 
       try {
-        const respuesta = await onMensajeEntrante(remoteJid, texto);
+        const respuesta = await onMensajeEntrante(remoteJid, texto, remoteJidAlt);
         if (!respuesta) continue; // server.js decidió no responder nada
 
         await delayAleatorio();
