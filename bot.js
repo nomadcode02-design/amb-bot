@@ -63,8 +63,70 @@ function limpiarSesionViejaUnaVez() {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------- Detección de instancias duplicadas (heartbeat) ----------
+// No podemos "matar" otro proceso desde acá (Railway corre cada deploy en
+// su propio contenedor, sin acceso entre sí). Lo que SÍ podemos hacer es
+// que cada instancia deje una marca de "estoy viva" en el volumen
+// persistente, y que antes de conectarse chequee si otra instancia marcó
+// vida hace muy poco. Si la hay, esperamos en vez de generar el conflicto.
+const LATIDO_PATH = path.join(__dirname, 'auth_info', '.instance-heartbeat');
+const LATIDO_INTERVALO_MS = 10000; // renovamos el latido cada 10s mientras estamos conectados
+const LATIDO_VENCIDO_MS = 25000;   // si el último latido tiene más de esto, la damos por muerta
+let latidoTimer = null;
+
+function otraInstanciaActiva() {
+  try {
+    const raw = fs.readFileSync(LATIDO_PATH, 'utf8');
+    const ultimoLatido = parseInt(raw, 10);
+    if (!ultimoLatido) return false;
+    return Date.now() - ultimoLatido < LATIDO_VENCIDO_MS;
+  } catch (e) {
+    return false; // no existe el archivo todavía -> no hay otra instancia activa
+  }
+}
+
+function actualizarLatido() {
+  try {
+    fs.mkdirSync(path.dirname(LATIDO_PATH), { recursive: true });
+    fs.writeFileSync(LATIDO_PATH, String(Date.now()));
+  } catch (e) {
+    console.error('Error actualizando el archivo de latido:', e);
+  }
+}
+
+function iniciarLatido() {
+  detenerLatido();
+  actualizarLatido();
+  latidoTimer = setInterval(actualizarLatido, LATIDO_INTERVALO_MS);
+}
+
+function detenerLatido() {
+  if (latidoTimer) {
+    clearInterval(latidoTimer);
+    latidoTimer = null;
+  }
+}
+
 async function startBot() {
   limpiarSesionViejaUnaVez();
+
+  if (otraInstanciaActiva()) {
+    console.log(
+      '⚠️ Se detectó otra instancia del bot activa hace muy poco (latido reciente). ' +
+      'Esperando 20s para evitar un conflicto de sesión antes de intentar conectar...'
+    );
+    await sleep(20000);
+    if (otraInstanciaActiva()) {
+      console.log('❌ La otra instancia sigue activa. Reintentando en 30s más...');
+      setTimeout(startBot, 30000);
+      return;
+    }
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(
     path.join(__dirname, 'auth_info')
   );
@@ -95,6 +157,26 @@ async function startBot() {
       if (statusCode === DisconnectReason.restartRequired) {
         console.log('Reinicio requerido (normal después de vincular). Reconectando ya...');
         setTimeout(startBot, 500);
+        return;
+      }
+
+      // Un "conflict" significa que WhatsApp detectó DOS conexiones activas
+      // usando la misma sesión al mismo tiempo (por ejemplo un deploy viejo
+      // que no terminó de morir antes de que arrancara el nuevo). Baileys lo
+      // reporta con el mismo código 401 que un logout real, pero NO es un
+      // logout: la sesión sigue siendo válida. Si tratáramos esto como logout
+      // borraríamos las credenciales sin necesidad y te obligaría a escanear
+      // el QR de nuevo cada vez que pase. Acá lo separamos: no se borra nada,
+      // solo se espera un poco más de lo normal (para darle tiempo a que la
+      // conexión vieja/duplicada termine de cerrarse) y se reintenta.
+      const esConflicto = /conflict/i.test(lastDisconnect?.error?.message || '');
+      if (esConflicto) {
+        console.log(
+          '⚠️ Conflicto de conexión: hay (o hubo) dos conexiones activas con la misma sesión ' +
+          '(probablemente un deploy viejo que no terminó de cerrarse). NO se borran las credenciales. ' +
+          'Reintentando en 15 segundos...'
+        );
+        setTimeout(startBot, 15000);
         return;
       }
 
@@ -226,11 +308,24 @@ async function processQueue() {
       }
       const jid = toWhatsAppId(job.numero);
       console.log(`📤 Intentando mandar mensaje a ${jid}...`);
-      const result = await sock.sendMessage(jid, { text: job.texto });
+
+      // Timeout de seguridad: si WhatsApp no confirma el envío en este
+      // tiempo (por ejemplo por un filtro anti-spam silencioso del lado
+      // del server), descartamos ESTE mensaje puntual en vez de dejar
+      // colgada toda la cola de mensajes siguientes.
+      const SEND_TIMEOUT_MS = 20000; // 20 segundos
+      const result = await Promise.race([
+        sock.sendMessage(jid, { text: job.texto }),
+        new Promise((_, rej) =>
+          setTimeout(() => rej(new Error(`Timeout: WhatsApp no confirmó el envío a ${jid} en ${SEND_TIMEOUT_MS / 1000}s`)), SEND_TIMEOUT_MS)
+        ),
+      ]);
+
       sentTimestamps.push(Date.now());
       console.log(`✅ sock.sendMessage() terminó sin errores para ${jid}. ID del mensaje: ${result?.key?.id || 'desconocido'}`);
       job.resolve(result);
     } catch (e) {
+      console.error(`❌ Error/timeout mandando mensaje a ${job.numero}:`, e.message);
       job.reject(e);
     }
 
