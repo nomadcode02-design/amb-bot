@@ -73,6 +73,27 @@ function delayAleatorio() {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Reintenta el envío si falla. Sirve para el caso en que Baileys está
+// renegociando la sesión de cifrado con el contacto (log "Closing session")
+// justo cuando se intenta mandar: el primer intento puede perderse, pero
+// una vez renegociada la sesión el reintento sí llega.
+async function enviarConReintento(jid, texto, intentos = 3) {
+  for (let i = 1; i <= intentos; i++) {
+    try {
+      await sock.sendMessage(jid, { text: texto });
+      console.log(`✅ Respuesta entregada con éxito a ${jid} (intento ${i})`);
+      return;
+    } catch (err) {
+      console.error(`⚠️ Falló intento ${i}/${intentos} enviando a ${jid}:`, err.message || err);
+      if (i < intentos) {
+        await new Promise(resolve => setTimeout(resolve, 2000 * i));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 // Arma el link de WhatsApp para que el CLIENTE inicie la conversación
 function armarLinkWhatsApp(numero, textoPredefinido) {
   const limpio = limpiarNumero(numero);
@@ -154,8 +175,7 @@ async function startBot() {
         await delayAleatorio();
         // Sin "quoted": citar mensajes @lid es una causa conocida de que
         // Baileys reporte éxito pero WhatsApp no entregue nada.
-        await sock.sendMessage(jidDestino, { text: respuesta });
-        console.log(`✅ Respuesta entregada con éxito a ${jidDestino}`);
+        await enviarConReintento(jidDestino, respuesta);
       } catch (err) {
         console.error(`❌ Error procesando/entregando mensaje a ${jidDestino}:`, err);
       }
