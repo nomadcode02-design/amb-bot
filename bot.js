@@ -152,14 +152,14 @@ async function startBot() {
       console.log(`📩 Mensaje entrante de ${msg.key.remoteJid}, respondiendo...`);
 
       try {
-        await sock.sendMessage(msg.key.remoteJid, {
-          text:
-            `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
+        await sendMessage(
+          msg.key.remoteJid,
+          `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
             `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
             `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
             `Link: ${LINK_RESERVAS}\n\n` +
-            `Nos vemos!`,
-        });
+            `Nos vemos!`
+        );
         console.log(`✅ Respuesta automática enviada a ${msg.key.remoteJid}`);
       } catch (e) {
         console.error('Error respondiendo al mensaje entrante:', e);
@@ -179,14 +179,79 @@ function toWhatsAppId(numero) {
   return `${n}@s.whatsapp.net`;
 }
 
-async function sendMessage(numero, texto) {
-  if (!sock || !isReady) {
-    throw new Error('El bot todavía no está conectado a WhatsApp.');
+// ---------- Cola de mensajes con cooldown ----------
+// En vez de mandar cada mensaje apenas se pide, los encolamos y los vamos
+// disparando de a uno, con una pausa random entre cada uno. Esto evita el
+// patrón de "ráfaga de mensajes" que WhatsApp puede interpretar como spam
+// y que termina cerrando la sesión con un error 401.
+const messageQueue = [];
+let isProcessingQueue = false;
+
+const MIN_DELAY_MS = 2500;   // pausa mínima entre mensajes
+const MAX_DELAY_MS_SEND = 6000; // pausa máxima entre mensajes
+
+// Colchón extra: nunca mandar más de N mensajes por minuto, pase lo que pase.
+const RATE_LIMIT_MAX_PER_MINUTE = 15;
+const RATE_LIMIT_WINDOW_MS = 60000;
+let sentTimestamps = [];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomDelay() {
+  return Math.floor(MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS_SEND - MIN_DELAY_MS));
+}
+
+async function processQueue() {
+  if (isProcessingQueue) return; // ya hay un worker corriendo
+  isProcessingQueue = true;
+
+  while (messageQueue.length > 0) {
+    // Chequeo de rate limit por minuto
+    const now = Date.now();
+    sentTimestamps = sentTimestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+    if (sentTimestamps.length >= RATE_LIMIT_MAX_PER_MINUTE) {
+      const waitMs = RATE_LIMIT_WINDOW_MS - (now - sentTimestamps[0]) + 500;
+      console.log(`⏳ Límite de ${RATE_LIMIT_MAX_PER_MINUTE} mensajes/min alcanzado. Esperando ${Math.ceil(waitMs / 1000)}s...`);
+      await sleep(waitMs);
+      continue;
+    }
+
+    const job = messageQueue.shift();
+
+    try {
+      if (!sock || !isReady) {
+        throw new Error('El bot todavía no está conectado a WhatsApp.');
+      }
+      const jid = toWhatsAppId(job.numero);
+      console.log(`📤 Intentando mandar mensaje a ${jid}...`);
+      const result = await sock.sendMessage(jid, { text: job.texto });
+      sentTimestamps.push(Date.now());
+      console.log(`✅ sock.sendMessage() terminó sin errores para ${jid}. ID del mensaje: ${result?.key?.id || 'desconocido'}`);
+      job.resolve(result);
+    } catch (e) {
+      job.reject(e);
+    }
+
+    // Pausa random antes del próximo mensaje de la cola (si queda alguno)
+    if (messageQueue.length > 0) {
+      const delay = randomDelay();
+      await sleep(delay);
+    }
   }
-  const jid = toWhatsAppId(numero);
-  console.log(`📤 Intentando mandar mensaje a ${jid}...`);
-  const result = await sock.sendMessage(jid, { text: texto });
-  console.log(`✅ sock.sendMessage() terminó sin errores para ${jid}. ID del mensaje: ${result?.key?.id || 'desconocido'}`);
+
+  isProcessingQueue = false;
+}
+
+// Encola el mensaje y devuelve una Promise que se resuelve/rechaza cuando
+// efectivamente se envía. La firma es la misma que antes, así que no hace
+// falta tocar el resto del código que llama a sendMessage.
+function sendMessage(numero, texto) {
+  return new Promise((resolve, reject) => {
+    messageQueue.push({ numero, texto, resolve, reject });
+    processQueue();
+  });
 }
 
 function getLatestQR() {
