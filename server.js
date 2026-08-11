@@ -45,6 +45,22 @@ function guardarTodosLosTurnos(turnos) {
   fs.writeFileSync(TURNOS_FILE, JSON.stringify(turnos, null, 2));
 }
 
+// ---------- Blindaje contra reservas simultáneas ----------
+// Aunque hoy el chequeo (¿está libre ese horario?) y el guardado son
+// operaciones sincrónicas -así que en la práctica ya no se pisan dentro
+// de un mismo proceso-, esta cola lo deja garantizado de forma explícita:
+// toda la sección "leer turnos → chequear → guardar" se ejecuta de a una
+// por vez, en orden de llegada, nunca en paralelo. Sirve tanto de refuerzo
+// ahora como de protección futura si en algún momento esa sección pasa a
+// tener código asincrónico en el medio.
+let colaTurnos = Promise.resolve();
+function conLockDeTurnos(fn) {
+  const resultado = colaTurnos.then(fn, fn);
+  // Si fn tira error, igual dejamos la cola lista para la siguiente reserva
+  colaTurnos = resultado.catch(() => {});
+  return resultado;
+}
+
 function leerBloqueos() {
   return JSON.parse(fs.readFileSync(BLOQUEOS_FILE, 'utf-8'));
 }
@@ -133,32 +149,43 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Servicio o barbero inválido.' });
     }
 
-    const turnosExistentes = leerTurnos();
-    const yaOcupado = turnosExistentes.some(
-      t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
-    );
-    if (yaOcupado) {
-      return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
-    }
+    // Todo lo que lee y después escribe turnos.json va adentro del lock,
+    // así dos reservas que llegan casi al mismo tiempo para el mismo
+    // horario nunca pueden "ganarle" una a la otra por una carrera.
+    const resultadoReserva = await conLockDeTurnos(() => {
+      const turnosExistentes = leerTurnos();
+      const yaOcupado = turnosExistentes.some(
+        t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
+      );
+      if (yaOcupado) {
+        return { error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` };
+      }
 
-    const bloqueos = leerBloqueos();
-    const estaBloqueado = bloqueos.some(
-      b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
-    );
-    if (estaBloqueado) {
-      return res.status(409).json({ error: 'Ese horario no está disponible. Elegí otro.' });
-    }
+      const bloqueos = leerBloqueos();
+      const estaBloqueado = bloqueos.some(
+        b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
+      );
+      if (estaBloqueado) {
+        return { error: 'Ese horario no está disponible. Elegí otro.' };
+      }
 
-    const turno = {
-      id: Date.now().toString(),
-      nombre, whatsapp, barbero: barberoNombre,
-      servicio: servicioInfo.nombre, precio: servicioInfo.precio,
-      dia, horario,
-      creado: new Date().toISOString(),
-      recordatorioEnviado: false,
-      completado: false,
-    };
-    guardarTurno(turno);
+      const turno = {
+        id: Date.now().toString(),
+        nombre, whatsapp, barbero: barberoNombre,
+        servicio: servicioInfo.nombre, precio: servicioInfo.precio,
+        dia, horario,
+        creado: new Date().toISOString(),
+        recordatorioEnviado: false,
+        completado: false,
+      };
+      guardarTurno(turno);
+      return { turno };
+    });
+
+    if (resultadoReserva.error) {
+      return res.status(409).json({ error: resultadoReserva.error });
+    }
+    const turno = resultadoReserva.turno;
 
     const fechaLinda = formatearFecha(dia);
     const mensajeCliente = construirMensajeConfirmacion(turno);
