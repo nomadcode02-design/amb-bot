@@ -97,19 +97,23 @@ function construirMensajeConfirmacion(turno) {
 
 // Busca, entre los turnos SIN confirmar todavía, cuál corresponde al
 // número que acaba de escribirle al bot. Resuelve el JID de cada turno
-// candidato y lo compara contra el JID entrante.
-async function buscarTurnoPorJid(remoteJid) {
+// candidato y lo compara contra el JID entrante (en cualquiera de sus
+// dos formas: @lid o @s.whatsapp.net).
+async function buscarTurnoPorJid(remoteJid, remoteJidAlt) {
   const turnos = leerTurnos();
   const candidatos = turnos
     .filter(t => !t.confirmacionEnviada)
     .sort((a, b) => new Date(b.creado) - new Date(a.creado)); // más recientes primero
 
+  console.log(`🔍 Buscando turno para remoteJid=${remoteJid} remoteJidAlt=${remoteJidAlt}. Candidatos sin confirmar: ${candidatos.length}`);
+
   for (const turno of candidatos) {
     try {
       const jid = await resolverJid(turno.whatsapp);
-      if (jid === remoteJid) return turno;
-    } catch {
-      // si no se puede resolver ese número, seguimos con el próximo candidato
+      console.log(`   → turno de ${turno.nombre} (whatsapp guardado: "${turno.whatsapp}") resolvió a jid: ${jid}`);
+      if (jid === remoteJid || jid === remoteJidAlt) return turno;
+    } catch (e) {
+      console.log(`   → turno de ${turno.nombre} (whatsapp guardado: "${turno.whatsapp}") NO se pudo resolver: ${e.message}`);
     }
   }
   return null;
@@ -416,8 +420,8 @@ cron.schedule('* * * * *', async () => {
 // Cuando alguien le escribe al bot (típicamente desde el link de WhatsApp
 // del formulario de reservas), buscamos si tiene un turno pendiente de
 // confirmar y le contestamos con los datos reales de SU turno.
-setOnMensaje(async (remoteJid, textoRecibido) => {
-  const turno = await buscarTurnoPorJid(remoteJid);
+setOnMensaje(async (remoteJid, textoRecibido, remoteJidAlt) => {
+  const turno = await buscarTurnoPorJid(remoteJid, remoteJidAlt);
 
   if (turno) {
     turno.confirmacionEnviada = true;
