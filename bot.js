@@ -19,6 +19,11 @@ let sock = null;
 let isReady = false;
 let latestQR = null;
 
+// ---------- Control de cooldown por usuario ----------
+// Guarda el timestamp del último mensaje respondido a cada remitente para evitar spam.
+const userCooldowns = new Map();
+const CHAT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutos entre respuestas automáticas al mismo chat
+
 // ---------- Control de reintentos de conexión (cooldown) ----------
 // Evita el loop infinito de reconexión que puede hacer que WhatsApp
 // suspenda el número por comportamiento sospechoso (muchos intentos seguidos).
@@ -231,18 +236,32 @@ async function startBot() {
       if (msg.key.remoteJid?.endsWith('@g.us')) continue;
       if (!msg.message) continue;
 
-      console.log(`📩 Mensaje entrante de ${msg.key.remoteJid}, respondiendo...`);
+      const senderJid = msg.key.remoteJid;
+
+      // Verificación de cooldown por cliente
+      const now = Date.now();
+      const lastSentTime = userCooldowns.get(senderJid) || 0;
+
+      if (now - lastSentTime < CHAT_COOLDOWN_MS) {
+        console.log(`⏳ Ignorando mensaje de ${senderJid} por estar en periodo de cooldown.`);
+        continue;
+      }
+
+      console.log(`📩 Mensaje entrante de ${senderJid}, respondiendo...`);
 
       try {
         await sendMessage(
-          msg.key.remoteJid,
+          senderJid,
           `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
             `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
             `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
             `Link: ${LINK_RESERVAS}\n\n` +
             `Nos vemos!`
         );
-        console.log(`✅ Respuesta automática enviada a ${msg.key.remoteJid}`);
+        
+        // Registrar el tiempo de respuesta para activar el cooldown de este chat
+        userCooldowns.set(senderJid, Date.now());
+        console.log(`✅ Respuesta automática enviada a ${senderJid}`);
       } catch (e) {
         console.error('Error respondiendo al mensaje entrante:', e);
       }
