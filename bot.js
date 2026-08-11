@@ -19,13 +19,20 @@ let isReady = false;
 let latestQR = null;
 let onMensajeEntrante = null; // callback que registra server.js
 
+// Carpeta de datos persistentes. En Railway, montá un Volume en /data
+// y seteá la variable de entorno DATA_DIR=/data — así auth_info y los
+// JSON sobreviven a reinicios y redeploys. Si no hay volumen (ej. en tu
+// máquina local), usa la carpeta del proyecto como antes.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
 // ---------- Ventana de conversación (24hs) ----------
 // Guardamos cuándo fue el último mensaje QUE NOS ESCRIBIÓ cada contacto.
 // Solo mandamos mensajes proactivos (confirmaciones, recordatorios) si
 // el contacto nos escribió dentro de las últimas 24hs. Así imitamos la
 // regla real de WhatsApp Business y evitamos mandar a quien nunca inició
 // conversación con el bot.
-const CONTACTOS_FILE = path.join(__dirname, 'contactos.json');
+const CONTACTOS_FILE = path.join(DATA_DIR, 'contactos.json');
 if (!fs.existsSync(CONTACTOS_FILE)) fs.writeFileSync(CONTACTOS_FILE, '{}');
 
 function leerContactos() {
@@ -74,7 +81,7 @@ function armarLinkWhatsApp(numero, textoPredefinido) {
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(
-    path.join(__dirname, 'auth_info')
+    path.join(DATA_DIR, 'auth_info')
   );
   const { version } = await fetchLatestBaileysVersion();
 

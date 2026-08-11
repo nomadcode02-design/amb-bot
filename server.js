@@ -19,10 +19,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const TURNOS_FILE = path.join(__dirname, 'turnos.json');
+// Misma carpeta persistente que usa bot.js para auth_info y contactos.json.
+// En Railway: Volume montado en /data + variable de entorno DATA_DIR=/data.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const TURNOS_FILE = path.join(DATA_DIR, 'turnos.json');
 if (!fs.existsSync(TURNOS_FILE)) fs.writeFileSync(TURNOS_FILE, '[]');
 
-const BLOQUEOS_FILE = path.join(__dirname, 'bloqueos.json');
+const BLOQUEOS_FILE = path.join(DATA_DIR, 'bloqueos.json');
 if (!fs.existsSync(BLOQUEOS_FILE)) fs.writeFileSync(BLOQUEOS_FILE, '[]');
 
 const OWNER_WHATSAPP = process.env.OWNER_WHATSAPP;
