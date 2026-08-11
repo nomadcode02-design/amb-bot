@@ -20,19 +20,18 @@ let isReady = false;
 let latestQR = null;
 
 // ---------- Control de cooldown por usuario ----------
-// Desactivado temporalmente para pruebas (0 milisegundos)
 const userCooldowns = new Map();
-const CHAT_COOLDOWN_MS = 0; 
+const CHAT_COOLDOWN_MS = 0; // Desactivado para pruebas
 
-// ---------- Control de reintentos de conexión (cooldown) ----------
+// ---------- Control de reintentos de conexión ----------
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
-const BASE_DELAY_MS = 30000; // 30 segundos
-const MAX_DELAY_MS = 300000; // tope de 5 minutos entre intentos
+const BASE_DELAY_MS = 30000;
+const MAX_DELAY_MS = 300000;
 
 // ---------- Horario de atención ----------
-const HORA_APERTURA = 9;  // 9 am
-const HORA_CIERRE = 21;   // 9 pm
+const HORA_APERTURA = 9;
+const HORA_CIERRE = 21;
 const LINK_RESERVAS = 'https://nomadcode02-design.github.io/amb-barber/';
 
 function estaDentroDeHorario(fecha = new Date()) {
@@ -40,7 +39,6 @@ function estaDentroDeHorario(fecha = new Date()) {
   return hora >= HORA_APERTURA && hora < HORA_CIERRE;
 }
 
-// ---------- Limpieza ÚNICA de una sesión vieja ----------
 function limpiarSesionViejaUnaVez() {
   const marker = path.join(__dirname, '.sesion-vieja-borrada');
   const authPath = path.join(__dirname, 'auth_info');
@@ -48,7 +46,7 @@ function limpiarSesionViejaUnaVez() {
   if (fs.existsSync(authPath)) {
     try {
       fs.rmSync(authPath, { recursive: true, force: true });
-      console.log('🧹 Se borró una sesión vieja de WhatsApp que había quedado guardada.');
+      console.log('🧹 Se borró una sesión vieja de WhatsApp.');
     } catch (e) {
       console.error('Error borrando la sesión vieja:', e);
     }
@@ -107,10 +105,7 @@ async function startBot() {
   limpiarSesionViejaUnaVez();
 
   if (otraInstanciaActiva()) {
-    console.log(
-      '⚠️ Se detectó otra instancia del bot activa hace muy poco (latido reciente). ' +
-      'Esperando 20s para evitar un conflicto de sesión antes de intentar conectar...'
-    );
+    console.log('⚠️ Se detectó otra instancia del bot activa hace muy poco. Esperando 20s...');
     await sleep(20000);
     if (otraInstanciaActiva()) {
       console.log('❌ La otra instancia sigue activa. Reintentando en 30s más...');
@@ -152,9 +147,7 @@ async function startBot() {
 
       const esConflicto = /conflict/i.test(lastDisconnect?.error?.message || '');
       if (esConflicto) {
-        console.log(
-          '⚠️ Conflicto de conexión detectado. Reintentando en 15 segundos...'
-        );
+        console.log('⚠️ Conflicto de conexión detectado. Reintentando en 15 segundos...');
         setTimeout(startBot, 15000);
         return;
       }
@@ -182,7 +175,7 @@ async function startBot() {
       latestQR = null;
       reconnectAttempts = 0;
       iniciarLatido();
-      console.log('✅ Bot de WhatsApp conectado y listo para confirmar turnos.');
+      console.log('✅ Bot de WhatsApp conectado y listo para recibir mensajes.');
     }
   });
 
@@ -193,54 +186,51 @@ async function startBot() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
+      // Ignorar si el mensaje fue enviado por el propio bot
       if (msg.key.fromMe) continue;
-      if (msg.key.remoteJid?.endsWith('@g.us')) continue;
+      
+      // Ignorar grupos
+      const remoteJid = msg.key.remoteJid;
+      if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
       if (!msg.message) continue;
 
-      // 1. Extraer el JID original
-      let senderJid = msg.key.remoteJid;
+      // Determinación robusta del destinatario para responder directamente al canal de entrada
+      let targetJid = remoteJid;
 
-      // 2. CORRECCIÓN DE LID: Si viene con terminación @lid, resolver al número real (@s.whatsapp.net)
-      if (senderJid && senderJid.endsWith('@lid')) {
-        const numeroReal = msg.key.participant || msg.participant;
-        if (numeroReal && numeroReal.endsWith('@s.whatsapp.net')) {
-          senderJid = numeroReal;
-        } else {
-          console.log(`⚠️ No se pudo extraer el número telefónico real desde el LID: ${senderJid}`);
-          continue;
+      // Si viene por LID, tratar de usar el participante o mantener el chat de origen
+      if (targetJid.endsWith('@lid')) {
+        const participant = msg.key.participant || msg.participant;
+        if (participant) {
+          targetJid = participant;
         }
       }
 
-      if (!senderJid || !senderJid.endsWith('@s.whatsapp.net')) {
-        console.log(`⚠️ Se omitió el mensaje porque el destinatario no es un teléfono válido: ${senderJid}`);
-        continue;
-      }
+      console.log(`📩 Mensaje entrante detectado desde: ${targetJid}`);
 
-      // 3. Verificación de cooldown por cliente
+      // Cooldown por usuario
       const now = Date.now();
-      const lastSentTime = userCooldowns.get(senderJid) || 0;
+      const lastSentTime = userCooldowns.get(targetJid) || 0;
 
       if (CHAT_COOLDOWN_MS > 0 && (now - lastSentTime < CHAT_COOLDOWN_MS)) {
-        console.log(`⏳ Ignorando mensaje de ${senderJid} por estar en periodo de cooldown.`);
+        console.log(`⏳ Ignorando mensaje de ${targetJid} por cooldown.`);
         continue;
       }
 
-      console.log(`📩 Mensaje entrante de ${senderJid}, respondiendo...`);
-
       try {
-        await sendMessage(
-          senderJid,
+        const textoRespuesta = 
           `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
-            `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
-            `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
-            `Link: ${LINK_RESERVAS}\n\n` +
-            `Nos vemos!`
-        );
-        
-        userCooldowns.set(senderJid, Date.now());
-        console.log(`✅ Respuesta automática enviada a ${senderJid}`);
+          `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
+          `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
+          `Link: ${LINK_RESERVAS}\n\n` +
+          `Nos vemos!`;
+
+        // Responder directamente al socket para evitar bloqueos en la cola durante la prueba
+        await sock.sendMessage(targetJid, { text: textoRespuesta });
+
+        userCooldowns.set(targetJid, Date.now());
+        console.log(`✅ Respuesta automática enviada instantáneamente a ${targetJid}`);
       } catch (e) {
-        console.error('Error respondiendo al mensaje entrante:', e);
+        console.error(`❌ Error enviando respuesta automática a ${targetJid}:`, e);
       }
     }
   });
@@ -248,7 +238,7 @@ async function startBot() {
   return sock;
 }
 
-// Normaliza un número argentino a formato E.164 para WhatsApp (whatsappId)
+// Normaliza un número argentino a formato E.164 para WhatsApp
 function toWhatsAppId(numero) {
   let n = numero.replace(/[^\d]/g, '');
   if (!n.startsWith('54')) n = '54' + n;
@@ -256,7 +246,7 @@ function toWhatsAppId(numero) {
   return `${n}@s.whatsapp.net`;
 }
 
-// ---------- Cola de mensajes con cooldown ----------
+// ---------- Cola de mensajes manuales ----------
 const messageQueue = [];
 let isProcessingQueue = false;
 
@@ -280,7 +270,7 @@ async function processQueue() {
     sentTimestamps = sentTimestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
     if (sentTimestamps.length >= RATE_LIMIT_MAX_PER_MINUTE) {
       const waitMs = RATE_LIMIT_WINDOW_MS - (now - sentTimestamps[0]) + 500;
-      console.log(`⏳ Límite de ${RATE_LIMIT_MAX_PER_MINUTE} mensajes/min alcanzado. Esperando ${Math.ceil(waitMs / 1000)}s...`);
+      console.log(`⏳ Límite de ${RATE_LIMIT_MAX_PER_MINUTE} msgs/min alcanzado. Esperando ${Math.ceil(waitMs / 1000)}s...`);
       await sleep(waitMs);
       continue;
     }
@@ -292,28 +282,27 @@ async function processQueue() {
         throw new Error('El bot todavía no está conectado a WhatsApp.');
       }
       
-      const jid = job.numero.endsWith('@s.whatsapp.net') ? job.numero : toWhatsAppId(job.numero);
-      console.log(`📤 Intentando mandar mensaje a ${jid}...`);
+      const jid = job.numero.endsWith('@s.whatsapp.net') || job.numero.endsWith('@lid') ? job.numero : toWhatsAppId(job.numero);
+      console.log(`📤 Mandando mensaje programado a ${jid}...`);
 
       const SEND_TIMEOUT_MS = 20000;
       const result = await Promise.race([
         sock.sendMessage(jid, { text: job.texto }),
         new Promise((_, rej) =>
-          setTimeout(() => rej(new Error(`Timeout: WhatsApp no confirmó el envío a ${jid} en ${SEND_TIMEOUT_MS / 1000}s`)), SEND_TIMEOUT_MS)
+          setTimeout(() => rej(new Error(`Timeout al enviar a ${jid}`)), SEND_TIMEOUT_MS)
         ),
       ]);
 
       sentTimestamps.push(Date.now());
-      console.log(`✅ Respuesta enviada para ${jid}. ID: ${result?.key?.id || 'desconocido'}`);
+      console.log(`✅ Mensaje en cola enviado a ${jid}. ID: ${result?.key?.id || 'desconocido'}`);
       job.resolve(result);
     } catch (e) {
-      console.error(`❌ Error/timeout mandando mensaje a ${job.numero}:`, e.message);
+      console.error(`❌ Error mandando mensaje a ${job.numero}:`, e.message);
       job.reject(e);
     }
 
     if (messageQueue.length > 0) {
-      const delay = randomDelay();
-      await sleep(delay);
+      await sleep(randomDelay());
     }
   }
 
