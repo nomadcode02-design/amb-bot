@@ -20,24 +20,19 @@ let isReady = false;
 let latestQR = null;
 
 // ---------- Control de cooldown por usuario ----------
-// Guarda el timestamp del último mensaje respondido a cada remitente para evitar spam.
+// Desactivado temporalmente para pruebas (0 milisegundos)
 const userCooldowns = new Map();
-const CHAT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutos entre respuestas automáticas al mismo chat
+const CHAT_COOLDOWN_MS = 0; 
 
 // ---------- Control de reintentos de conexión (cooldown) ----------
-// Evita el loop infinito de reconexión que puede hacer que WhatsApp
-// suspenda el número por comportamiento sospechoso (muchos intentos seguidos).
-// Arranca esperando 30 segundos entre intentos (no 5, para ser menos agresivo)
-// y va duplicando el tiempo de espera hasta un tope de 5 minutos.
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_DELAY_MS = 30000; // 30 segundos
 const MAX_DELAY_MS = 300000; // tope de 5 minutos entre intentos
 
-// ---------- Horario de atención (se muestra en textos, pero el aviso ahora es 24hs) ----------
+// ---------- Horario de atención ----------
 const HORA_APERTURA = 9;  // 9 am
 const HORA_CIERRE = 21;   // 9 pm
-// Ajustá este link al real de tu página de reservas
 const LINK_RESERVAS = 'https://nomadcode02-design.github.io/amb-barber/';
 
 function estaDentroDeHorario(fecha = new Date()) {
@@ -45,14 +40,11 @@ function estaDentroDeHorario(fecha = new Date()) {
   return hora >= HORA_APERTURA && hora < HORA_CIERRE;
 }
 
-// ---------- Limpieza ÚNICA de una sesión vieja que haya quedado pegada ----------
-// Esto corre UNA sola vez (se marca con un archivo aparte) para borrar la
-// carpeta auth_info con la sesión de prueba. Después de que esto se ejecute
-// una vez y confirmes que anda bien, se puede sacar este bloque del código.
+// ---------- Limpieza ÚNICA de una sesión vieja ----------
 function limpiarSesionViejaUnaVez() {
   const marker = path.join(__dirname, '.sesion-vieja-borrada');
   const authPath = path.join(__dirname, 'auth_info');
-  if (fs.existsSync(marker)) return; // ya se hizo, no repetir
+  if (fs.existsSync(marker)) return;
   if (fs.existsSync(authPath)) {
     try {
       fs.rmSync(authPath, { recursive: true, force: true });
@@ -73,14 +65,9 @@ function sleep(ms) {
 }
 
 // ---------- Detección de instancias duplicadas (heartbeat) ----------
-// No podemos "matar" otro proceso desde acá (Railway corre cada deploy en
-// su propio contenedor, sin acceso entre sí). Lo que SÍ podemos hacer es
-// que cada instancia deje una marca de "estoy viva" en el volumen
-// persistente, y que antes de conectarse chequee si otra instancia marcó
-// vida hace muy poco. Si la hay, esperamos en vez de generar el conflicto.
 const LATIDO_PATH = path.join(__dirname, 'auth_info', '.instance-heartbeat');
-const LATIDO_INTERVALO_MS = 10000; // renovamos el latido cada 10s mientras estamos conectados
-const LATIDO_VENCIDO_MS = 25000;   // si el último latido tiene más de esto, la damos por muerta
+const LATIDO_INTERVALO_MS = 10000;
+const LATIDO_VENCIDO_MS = 25000;
 let latidoTimer = null;
 
 function otraInstanciaActiva() {
@@ -90,7 +77,7 @@ function otraInstanciaActiva() {
     if (!ultimoLatido) return false;
     return Date.now() - ultimoLatido < LATIDO_VENCIDO_MS;
   } catch (e) {
-    return false; // no existe el archivo todavía -> no hay otra instancia activa
+    return false;
   }
 }
 
@@ -142,6 +129,7 @@ async function startBot() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
   });
+
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
@@ -151,35 +139,21 @@ async function startBot() {
     }
     if (connection === 'close') {
       isReady = false;
+      detenerLatido();
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log('Conexión cerrada. Código:', statusCode, '| Motivo:', lastDisconnect?.error?.message);
 
-      // El código 515 (restart required) es un paso NORMAL justo después de
-      // vincular un dispositivo por primera vez — no es un error real ni
-      // indica que WhatsApp esté bloqueando nada. Reconectar casi al
-      // instante, sin el cooldown lento pensado para errores de verdad.
       if (statusCode === DisconnectReason.restartRequired) {
-        console.log('Reinicio requerido (normal después de vincular). Reconectando ya...');
+        console.log('Reinicio requerido. Reconectando ya...');
         setTimeout(startBot, 500);
         return;
       }
 
-      // Un "conflict" significa que WhatsApp detectó DOS conexiones activas
-      // usando la misma sesión al mismo tiempo (por ejemplo un deploy viejo
-      // que no terminó de morir antes de que arrancara el nuevo). Baileys lo
-      // reporta con el mismo código 401 que un logout real, pero NO es un
-      // logout: la sesión sigue siendo válida. Si tratáramos esto como logout
-      // borraríamos las credenciales sin necesidad y te obligaría a escanear
-      // el QR de nuevo cada vez que pase. Acá lo separamos: no se borra nada,
-      // solo se espera un poco más de lo normal (para darle tiempo a que la
-      // conexión vieja/duplicada termine de cerrarse) y se reintenta.
       const esConflicto = /conflict/i.test(lastDisconnect?.error?.message || '');
       if (esConflicto) {
         console.log(
-          '⚠️ Conflicto de conexión: hay (o hubo) dos conexiones activas con la misma sesión ' +
-          '(probablemente un deploy viejo que no terminó de cerrarse). NO se borran las credenciales. ' +
-          'Reintentando en 15 segundos...'
+          '⚠️ Conflicto de conexión detectado. Reintentando en 15 segundos...'
         );
         setTimeout(startBot, 15000);
         return;
@@ -188,18 +162,11 @@ async function startBot() {
       if (shouldReconnect) {
         reconnectAttempts++;
         if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-          console.log(
-            `❌ Se alcanzaron los ${MAX_RECONNECT_ATTEMPTS} reintentos máximos. ` +
-            `El bot dejó de intentar conectar para no arriesgar el número. ` +
-            `Reiniciá el servicio manualmente (redeploy en Railway) cuando quieras retomar.`
-          );
-          return; // corta el loop, NO vuelve a llamar a startBot
+          console.log(`❌ Se alcanzaron los ${MAX_RECONNECT_ATTEMPTS} reintentos máximos.`);
+          return;
         }
-        // Backoff exponencial: 30s, 60s, 120s, 240s, 300s (tope)
         const delay = Math.min(BASE_DELAY_MS * 2 ** (reconnectAttempts - 1), MAX_DELAY_MS);
-        console.log(
-          `Reintentando en ${delay / 1000} segundos... (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`
-        );
+        console.log(`Reintentando en ${delay / 1000} segundos...`);
         setTimeout(startBot, delay);
       } else {
         console.log('Sesión cerrada (logout). Borrando credenciales viejas...');
@@ -209,40 +176,51 @@ async function startBot() {
         } catch (e) {
           console.error('Error borrando credenciales viejas:', e);
         }
-        console.log(
-          '⚠️ No se genera un QR nuevo automáticamente. ' +
-          'Reiniciá el servicio manualmente (redeploy en Railway) cuando quieras escanear uno nuevo.'
-        );
-        // Importante: ya NO se llama a startBot acá automáticamente.
-        // Esto evita el loop de "logout -> borra creds -> genera QR -> falla -> logout -> ..."
       }
     } else if (connection === 'open') {
       isReady = true;
       latestQR = null;
-      reconnectAttempts = 0; // resetea el contador apenas conecta bien
+      reconnectAttempts = 0;
+      iniciarLatido();
       console.log('✅ Bot de WhatsApp conectado y listo para confirmar turnos.');
     }
   });
+
   sock.ev.on('creds.update', saveCreds);
 
   // ---------- Escucha de mensajes entrantes ----------
-  // Este mensaje se manda siempre (24/7), esté dentro o fuera del horario de atención.
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      // Ignorar mensajes propios y de grupos
       if (msg.key.fromMe) continue;
       if (msg.key.remoteJid?.endsWith('@g.us')) continue;
       if (!msg.message) continue;
 
-      const senderJid = msg.key.remoteJid;
+      // 1. Extraer el JID original
+      let senderJid = msg.key.remoteJid;
 
-      // Verificación de cooldown por cliente
+      // 2. CORRECCIÓN DE LID: Si viene con terminación @lid, resolver al número real (@s.whatsapp.net)
+      if (senderJid && senderJid.endsWith('@lid')) {
+        const numeroReal = msg.key.participant || msg.participant;
+        if (numeroReal && numeroReal.endsWith('@s.whatsapp.net')) {
+          senderJid = numeroReal;
+        } else {
+          console.log(`⚠️ No se pudo extraer el número telefónico real desde el LID: ${senderJid}`);
+          continue;
+        }
+      }
+
+      if (!senderJid || !senderJid.endsWith('@s.whatsapp.net')) {
+        console.log(`⚠️ Se omitió el mensaje porque el destinatario no es un teléfono válido: ${senderJid}`);
+        continue;
+      }
+
+      // 3. Verificación de cooldown por cliente
       const now = Date.now();
       const lastSentTime = userCooldowns.get(senderJid) || 0;
 
-      if (now - lastSentTime < CHAT_COOLDOWN_MS) {
+      if (CHAT_COOLDOWN_MS > 0 && (now - lastSentTime < CHAT_COOLDOWN_MS)) {
         console.log(`⏳ Ignorando mensaje de ${senderJid} por estar en periodo de cooldown.`);
         continue;
       }
@@ -259,7 +237,6 @@ async function startBot() {
             `Nos vemos!`
         );
         
-        // Registrar el tiempo de respuesta para activar el cooldown de este chat
         userCooldowns.set(senderJid, Date.now());
         console.log(`✅ Respuesta automática enviada a ${senderJid}`);
       } catch (e) {
@@ -275,41 +252,30 @@ async function startBot() {
 function toWhatsAppId(numero) {
   let n = numero.replace(/[^\d]/g, '');
   if (!n.startsWith('54')) n = '54' + n;
-  // Baileys/WhatsApp requiere el 9 luego del 54 para celulares argentinos
   if (!n.startsWith('549')) n = '549' + n.slice(2);
   return `${n}@s.whatsapp.net`;
 }
 
 // ---------- Cola de mensajes con cooldown ----------
-// En vez de mandar cada mensaje apenas se pide, los encolamos y los vamos
-// disparando de a uno, con una pausa random entre cada uno. Esto evita el
-// patrón de "ráfaga de mensajes" que WhatsApp puede interpretar como spam
-// y que termina cerrando la sesión con un error 401.
 const messageQueue = [];
 let isProcessingQueue = false;
 
-const MIN_DELAY_MS = 2500;   // pausa mínima entre mensajes
-const MAX_DELAY_MS_SEND = 6000; // pausa máxima entre mensajes
+const MIN_DELAY_MS = 2500;
+const MAX_DELAY_MS_SEND = 6000;
 
-// Colchón extra: nunca mandar más de N mensajes por minuto, pase lo que pase.
 const RATE_LIMIT_MAX_PER_MINUTE = 15;
 const RATE_LIMIT_WINDOW_MS = 60000;
 let sentTimestamps = [];
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function randomDelay() {
   return Math.floor(MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS_SEND - MIN_DELAY_MS));
 }
 
 async function processQueue() {
-  if (isProcessingQueue) return; // ya hay un worker corriendo
+  if (isProcessingQueue) return;
   isProcessingQueue = true;
 
   while (messageQueue.length > 0) {
-    // Chequeo de rate limit por minuto
     const now = Date.now();
     sentTimestamps = sentTimestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
     if (sentTimestamps.length >= RATE_LIMIT_MAX_PER_MINUTE) {
@@ -325,14 +291,11 @@ async function processQueue() {
       if (!sock || !isReady) {
         throw new Error('El bot todavía no está conectado a WhatsApp.');
       }
-      const jid = toWhatsAppId(job.numero);
+      
+      const jid = job.numero.endsWith('@s.whatsapp.net') ? job.numero : toWhatsAppId(job.numero);
       console.log(`📤 Intentando mandar mensaje a ${jid}...`);
 
-      // Timeout de seguridad: si WhatsApp no confirma el envío en este
-      // tiempo (por ejemplo por un filtro anti-spam silencioso del lado
-      // del server), descartamos ESTE mensaje puntual en vez de dejar
-      // colgada toda la cola de mensajes siguientes.
-      const SEND_TIMEOUT_MS = 20000; // 20 segundos
+      const SEND_TIMEOUT_MS = 20000;
       const result = await Promise.race([
         sock.sendMessage(jid, { text: job.texto }),
         new Promise((_, rej) =>
@@ -341,14 +304,13 @@ async function processQueue() {
       ]);
 
       sentTimestamps.push(Date.now());
-      console.log(`✅ sock.sendMessage() terminó sin errores para ${jid}. ID del mensaje: ${result?.key?.id || 'desconocido'}`);
+      console.log(`✅ Respuesta enviada para ${jid}. ID: ${result?.key?.id || 'desconocido'}`);
       job.resolve(result);
     } catch (e) {
       console.error(`❌ Error/timeout mandando mensaje a ${job.numero}:`, e.message);
       job.reject(e);
     }
 
-    // Pausa random antes del próximo mensaje de la cola (si queda alguno)
     if (messageQueue.length > 0) {
       const delay = randomDelay();
       await sleep(delay);
@@ -358,9 +320,6 @@ async function processQueue() {
   isProcessingQueue = false;
 }
 
-// Encola el mensaje y devuelve una Promise que se resuelve/rechaza cuando
-// efectivamente se envía. La firma es la misma que antes, así que no hace
-// falta tocar el resto del código que llama a sendMessage.
 function sendMessage(numero, texto) {
   return new Promise((resolve, reject) => {
     messageQueue.push({ numero, texto, resolve, reject });
