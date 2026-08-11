@@ -26,6 +26,17 @@ let onMensajeEntrante = null; // callback que registra server.js
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
+// Reseteo de sesión: si RESET_SESSION=true está seteada como variable de
+// entorno, borra la carpeta auth_info (sesión de cifrado corrupta, error
+// "Bad MAC") antes de arrancar, forzando un reemparejamiento limpio por QR.
+// IMPORTANTE: sacar esta variable después de usarla una vez, o borrará la
+// sesión en cada reinicio.
+const AUTH_DIR = path.join(DATA_DIR, 'auth_info');
+if (process.env.RESET_SESSION === 'true' && fs.existsSync(AUTH_DIR)) {
+  fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+  console.log('🗑️ auth_info borrado por RESET_SESSION=true. Va a pedir escanear QR de nuevo.');
+}
+
 // ---------- Ventana de conversación (24hs) ----------
 // Guardamos cuándo fue el último mensaje QUE NOS ESCRIBIÓ cada contacto.
 // Solo mandamos mensajes proactivos (confirmaciones, recordatorios) si
@@ -101,9 +112,7 @@ function armarLinkWhatsApp(numero, textoPredefinido) {
 }
 
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(
-    path.join(DATA_DIR, 'auth_info')
-  );
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
