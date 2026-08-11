@@ -91,7 +91,9 @@ function construirMensajeConfirmacion(turno) {
     `🕐 Hora: ${turno.horario} hs\n` +
     `💰 Precio: ${turno.precio}\n\n` +
     `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
-    `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`
+    `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.\n\n` +
+    `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.\n\n` +
+    `¡Nos vemos pronto!`
   );
 }
 
@@ -433,7 +435,8 @@ setOnMensaje(async (remoteJid, textoRecibido, remoteJidAlt) => {
   return (
     `¡Hola! Gracias por escribirnos a AMB Barbers 💈\n\n` +
     `No encontramos ningún turno pendiente asociado a este número. ` +
-    `Si querés reservar, hacelo desde nuestra web y después escribinos por acá para confirmar.`
+    `Si querés reservar, hacelo desde nuestra web y después escribinos por acá para confirmar.\n\n` +
+    `👉 https://nomadcode02-design.github.io/amb-barber/formulario.html`
   );
 });
 
