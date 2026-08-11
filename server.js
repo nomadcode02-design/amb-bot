@@ -8,12 +8,6 @@ const cron = require('node-cron');
 const { startBot, sendMessage, getLatestQR, isConnected } = require('./bot');
 const { SERVICIOS, BARBEROS } = require('./data');
 
-// ---------- Red de seguridad: errores no capturados ----------
-// Sin esto, un solo error inesperado en cualquier parte del código (una
-// promesa rechazada sin manejar, por ejemplo) tira abajo TODO el proceso:
-// se cae el bot de WhatsApp, el endpoint de reservas, los recordatorios,
-// todo junto. Con esto, el error queda logueado pero el servidor sigue
-// funcionando para todo lo demás.
 process.on('uncaughtException', (err) => {
   console.error('⚠️ Error no capturado (el servidor sigue funcionando):', err);
 });
@@ -31,8 +25,8 @@ if (!fs.existsSync(TURNOS_FILE)) fs.writeFileSync(TURNOS_FILE, '[]');
 const BLOQUEOS_FILE = path.join(__dirname, 'bloqueos.json');
 if (!fs.existsSync(BLOQUEOS_FILE)) fs.writeFileSync(BLOQUEOS_FILE, '[]');
 
-const OWNER_WHATSAPP = process.env.OWNER_WHATSAPP; // ej: 2646023107
-const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave'; // clave del panel de control
+const OWNER_WHATSAPP = process.env.OWNER_WHATSAPP;
+const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
 
 function leerTurnos() {
   return JSON.parse(fs.readFileSync(TURNOS_FILE, 'utf-8'));
@@ -53,8 +47,6 @@ function guardarBloqueos(bloqueos) {
   fs.writeFileSync(BLOQUEOS_FILE, JSON.stringify(bloqueos, null, 2));
 }
 
-// Genera la lista de horarios en punto entre horaInicio (incluido) y
-// horaFin (excluido). Ej: "14:00" a "16:00" -> ["14:00", "15:00"]
 function generarHorariosEntre(horaInicio, horaFin) {
   const horarios = [];
   let h = Number(horaInicio.split(':')[0]);
@@ -71,18 +63,10 @@ function formatearFecha(diaISO) {
   return `${d}/${m}/${y}`;
 }
 
-// Combina "dia" (YYYY-MM-DD) + "horario" (HH:MM) en un objeto Date real.
-// Importante: se fuerza el offset -03:00 (hora de Argentina) para que el
-// cálculo sea correcto sin importar en qué zona horaria corra el servidor
-// de Railway (por defecto suele correr en UTC).
 function fechaHoraDelTurno(turno) {
   return new Date(`${turno.dia}T${turno.horario}:00-03:00`);
 }
 
-// Decide con cuántos minutos de anticipación mandar el recordatorio,
-// según cuánto tiempo hubo entre el momento de la reserva y la hora del turno.
-// Si reservaron con mucha antelación, avisa 30 min antes; si reservaron
-// más sobre la hora, avisa más cerca (10 o 5 min antes) para no perder el aviso.
 function minutosDeAvisoPara(turno) {
   const horaTurno = fechaHoraDelTurno(turno);
   const anticipacionTotal = (horaTurno - new Date(turno.creado)) / 60000;
@@ -105,7 +89,6 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Servicio o barbero inválido.' });
     }
 
-    // Chequear que ese barbero no tenga ya un turno ocupado ese día y horario
     const turnosExistentes = leerTurnos();
     const yaOcupado = turnosExistentes.some(
       t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
@@ -114,7 +97,6 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
     }
 
-    // Chequear que ese horario no haya sido bloqueado desde el panel
     const bloqueos = leerBloqueos();
     const estaBloqueado = bloqueos.some(
       b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
@@ -129,8 +111,8 @@ app.post('/api/reservar', async (req, res) => {
       servicio: servicioInfo.nombre, precio: servicioInfo.precio,
       dia, horario,
       creado: new Date().toISOString(),
-      recordatorioEnviado: false, // <-- nuevo campo para el recordatorio
-      completado: false, // <-- se pone en true cuando el barbero confirma que cortó de verdad
+      recordatorioEnviado: false,
+      completado: false,
     };
     guardarTurno(turno);
 
@@ -146,13 +128,19 @@ app.post('/api/reservar', async (req, res) => {
       `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
       `Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
 
+    // Enviar mensaje al cliente
     await sendMessage(whatsapp, mensajeCliente);
 
+    // Enviar mensaje al dueño con protección de errores por si el número falla
     if (OWNER_WHATSAPP) {
-      const mensajeDueno =
-        `📌 Nueva reserva confirmada automáticamente:\n` +
-        `${nombre} (${whatsapp})\n${barberoNombre} - ${servicioInfo.nombre}\n${fechaLinda} ${horario} hs`;
-      await sendMessage(OWNER_WHATSAPP, mensajeDueno);
+      try {
+        const mensajeDueno =
+          `📌 Nueva reserva confirmada automáticamente:\n` +
+          `${nombre} (${whatsapp})\n${barberoNombre} - ${servicioInfo.nombre}\n${fechaLinda} ${horario} hs`;
+        await sendMessage(OWNER_WHATSAPP, mensajeDueno);
+      } catch (e) {
+        console.error('⚠️ No se pudo notificar al dueño (número no disponible o suspendido):', e.message);
+      }
     }
 
     res.json({ ok: true, turno });
@@ -162,8 +150,6 @@ app.post('/api/reservar', async (req, res) => {
   }
 });
 
-// Endpoint público (sin clave): solo devuelve qué horarios están ocupados
-// para un barbero y día puntual, sin exponer nombres ni teléfonos de clientes.
 app.get('/api/ocupados', (req, res) => {
   const { dia, barbero } = req.query;
   if (!dia || !barbero) {
@@ -204,7 +190,6 @@ app.get('/api/turnos', (req, res) => {
   }
 });
 
-// ---------- Bloqueo de horarios (panel de control) ----------
 app.get('/api/bloqueos', (req, res) => {
   if (req.query.key !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
@@ -267,8 +252,6 @@ app.delete('/api/bloqueos/:grupoId', (req, res) => {
   }
 });
 
-// Marca (o desmarca) un turno como "corte realmente hecho". Solo los turnos
-// confirmados así cuentan para la caja de cada barbero en el panel.
 app.patch('/api/turnos/:id/completar', (req, res) => {
   if (req.query.key !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
@@ -342,8 +325,6 @@ app.get('/qr', async (req, res) => {
 
 app.get('/', (req, res) => res.send('AMB Barbers bot API OK'));
 
-// ---------- Recordatorio automático 30 minutos antes del turno ----------
-// Corre cada minuto y revisa si algún turno está por empezar en media hora.
 cron.schedule('* * * * *', async () => {
  try {
   const ahora = new Date();
@@ -355,15 +336,10 @@ cron.schedule('* * * * *', async () => {
 
     const horaTurno = fechaHoraDelTurno(turno);
     const minutosFaltantes = (horaTurno - ahora) / 60000;
-
     const minutosDeAviso = minutosDeAvisoPara(turno);
 
-    // Si faltan `minutosDeAviso` minutos o menos (y el turno todavía no pasó)
-    // y todavía no se mandó el aviso, se manda ahora. Esto cubre tanto el
-    // caso normal (se detecta al cruzar el umbral) como el de una reserva
-    // hecha sobre la hora (el umbral ya es más chico en ese caso).
     if (minutosFaltantes <= minutosDeAviso && minutosFaltantes > 0) {
-      console.log(`⏰ Mandando recordatorio a ${turno.nombre} (${turno.whatsapp}) — turno a las ${turno.horario} hs, faltan ${Math.round(minutosFaltantes)} min`);
+      console.log(`⏰ Mandando recordatorio a ${turno.nombre} (${turno.whatsapp})`);
       try {
         await sendMessage(
           turno.whatsapp,
