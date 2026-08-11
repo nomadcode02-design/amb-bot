@@ -91,11 +91,52 @@ function delayAleatorio() {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ---------- Cooldown de envíos (para no "volver loco" a WhatsApp) ----------
+// 1) Cola global: TODOS los envíos (confirmaciones, recordatorios, avisos al
+//    dueño, respuestas de ausencia) pasan por acá y se mandan de a uno, nunca
+//    en paralelo, con un espacio mínimo entre cualquier par de mensajes.
+// 2) Cooldown por contacto: además, a un mismo número no se le manda más de
+//    un mensaje dentro de esa misma ventana corta, por si algo dispara un
+//    envío duplicado por error.
+const COOLDOWN_GLOBAL_MS = 12000; // mínimo entre dos envíos, sean a quien sean
+const COOLDOWN_CONTACTO_MS = 45000; // mínimo entre dos mensajes al MISMO número
+
+let colaEnvios = Promise.resolve();
+let ultimoEnvioGlobal = 0;
+const ultimoEnvioPorJid = {};
+
+function encolarEnvio(jid, fn) {
+  colaEnvios = colaEnvios.then(async () => {
+    const ahora = () => Date.now();
+
+    // Esperar el cooldown global (desde el último envío, sea a quien sea)
+    let espera = COOLDOWN_GLOBAL_MS - (ahora() - ultimoEnvioGlobal);
+    if (espera > 0) await new Promise(r => setTimeout(r, espera));
+
+    // Esperar el cooldown por contacto, si a ESE jid ya se le mandó algo hace poco
+    const ultimoAEsteJid = ultimoEnvioPorJid[jid] || 0;
+    espera = COOLDOWN_CONTACTO_MS - (ahora() - ultimoAEsteJid);
+    if (espera > 0) {
+      console.log(`⏳ Cooldown: esperando ${Math.ceil(espera / 1000)}s antes de volver a escribirle a ${jid}`);
+      await new Promise(r => setTimeout(r, espera));
+    }
+
+    ultimoEnvioGlobal = Date.now();
+    ultimoEnvioPorJid[jid] = Date.now();
+    return fn();
+  });
+  return colaEnvios;
+}
+
 // Reintenta el envío si falla. Sirve para el caso en que Baileys está
 // renegociando la sesión de cifrado con el contacto (log "Closing session")
 // justo cuando se intenta mandar: el primer intento puede perderse, pero
 // una vez renegociada la sesión el reintento sí llega.
 async function enviarConReintento(jid, texto, intentos = 3) {
+  return encolarEnvio(jid, () => enviarConReintentoInterno(jid, texto, intentos));
+}
+
+async function enviarConReintentoInterno(jid, texto, intentos = 3) {
   for (let i = 1; i <= intentos; i++) {
     try {
       await sock.sendMessage(jid, { text: texto });
@@ -237,9 +278,11 @@ async function sendMessage(numero, texto, { forzar = false } = {}) {
     };
   }
 
-  await delayAleatorio();
   console.log(`📤 Enviando mensaje a: ${jid}`);
-  await sock.sendMessage(jid, { text: texto });
+  await encolarEnvio(jid, async () => {
+    await delayAleatorio();
+    await sock.sendMessage(jid, { text: texto });
+  });
   return { enviado: true, jid };
 }
 
