@@ -1,5 +1,4 @@
-// Polyfill necesario: Baileys usa el objeto global "crypto", que en algunas
-// versiones/entornos de Node.js no está disponible como global por defecto.
+// Polyfill necesario para entornos de Node.js donde crypto no es global
 const nodeCrypto = require('crypto');
 if (!globalThis.crypto) {
   globalThis.crypto = nodeCrypto.webcrypto;
@@ -29,15 +28,8 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_DELAY_MS = 30000;
 const MAX_DELAY_MS = 300000;
 
-// ---------- Horario de atención ----------
-const HORA_APERTURA = 9;
-const HORA_CIERRE = 21;
+// ---------- Enlaces y datos ----------
 const LINK_RESERVAS = 'https://nomadcode02-design.github.io/amb-barber/';
-
-function estaDentroDeHorario(fecha = new Date()) {
-  const hora = fecha.getHours();
-  return hora >= HORA_APERTURA && hora < HORA_CIERRE;
-}
 
 function limpiarSesionViejaUnaVez() {
   const marker = path.join(__dirname, '.sesion-vieja-borrada');
@@ -62,7 +54,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ---------- Detección de instancias duplicadas (heartbeat) ----------
+// ---------- Heartbeat para evitar instancias duplicadas ----------
 const LATIDO_PATH = path.join(__dirname, 'auth_info', '.instance-heartbeat');
 const LATIDO_INTERVALO_MS = 10000;
 const LATIDO_VENCIDO_MS = 25000;
@@ -105,10 +97,10 @@ async function startBot() {
   limpiarSesionViejaUnaVez();
 
   if (otraInstanciaActiva()) {
-    console.log('⚠️ Se detectó otra instancia del bot activa hace muy poco. Esperando 20s...');
+    console.log('⚠️ Se detectó otra instancia del bot activa. Esperando 20s...');
     await sleep(20000);
     if (otraInstanciaActiva()) {
-      console.log('❌ La otra instancia sigue activa. Reintentando en 30s más...');
+      console.log('❌ La otra instancia sigue activa. Reintentando en 30s...');
       setTimeout(startBot, 30000);
       return;
     }
@@ -129,7 +121,7 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
       latestQR = qr;
-      console.log('\n=== Nuevo QR disponible. Entrá a /qr en tu navegador para verlo ===\n');
+      console.log('\n=== Nuevo QR disponible ===\n');
       qrcode.generate(qr, { small: true });
     }
     if (connection === 'close') {
@@ -137,45 +129,35 @@ async function startBot() {
       detenerLatido();
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log('Conexión cerrada. Código:', statusCode, '| Motivo:', lastDisconnect?.error?.message);
 
       if (statusCode === DisconnectReason.restartRequired) {
-        console.log('Reinicio requerido. Reconectando ya...');
         setTimeout(startBot, 500);
         return;
       }
 
       const esConflicto = /conflict/i.test(lastDisconnect?.error?.message || '');
       if (esConflicto) {
-        console.log('⚠️ Conflicto de conexión detectado. Reintentando en 15 segundos...');
         setTimeout(startBot, 15000);
         return;
       }
 
       if (shouldReconnect) {
         reconnectAttempts++;
-        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-          console.log(`❌ Se alcanzaron los ${MAX_RECONNECT_ATTEMPTS} reintentos máximos.`);
-          return;
-        }
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) return;
         const delay = Math.min(BASE_DELAY_MS * 2 ** (reconnectAttempts - 1), MAX_DELAY_MS);
-        console.log(`Reintentando en ${delay / 1000} segundos...`);
         setTimeout(startBot, delay);
       } else {
-        console.log('Sesión cerrada (logout). Borrando credenciales viejas...');
         const authPath = path.join(__dirname, 'auth_info');
         try {
           fs.rmSync(authPath, { recursive: true, force: true });
-        } catch (e) {
-          console.error('Error borrando credenciales viejas:', e);
-        }
+        } catch (e) {}
       }
     } else if (connection === 'open') {
       isReady = true;
       latestQR = null;
       reconnectAttempts = 0;
       iniciarLatido();
-      console.log('✅ Bot de WhatsApp conectado y listo para recibir mensajes.');
+      console.log('✅ Bot de WhatsApp conectado y listo.');
     }
   });
 
@@ -186,18 +168,15 @@ async function startBot() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      // Ignorar si el mensaje fue enviado por el propio bot
       if (msg.key.fromMe) continue;
       
-      // Ignorar grupos
       const remoteJid = msg.key.remoteJid;
       if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
       if (!msg.message) continue;
 
-      // Determinación robusta del destinatario para responder directamente al canal de entrada
       let targetJid = remoteJid;
 
-      // Si viene por LID, tratar de usar el participante o mantener el chat de origen
+      // Si viene por LID, intentar extraer el participante real
       if (targetJid.endsWith('@lid')) {
         const participant = msg.key.participant || msg.participant;
         if (participant) {
@@ -205,32 +184,45 @@ async function startBot() {
         }
       }
 
-      console.log(`📩 Mensaje entrante detectado desde: ${targetJid}`);
+      // Extraer el texto del mensaje
+      const textoRecibido = (
+        msg.message.conversation || 
+        msg.message.extendedTextMessage?.text || 
+        ''
+      ).toLowerCase().trim();
+
+      console.log(`📩 Mensaje recibido de ${targetJid}: "${textoRecibido}"`);
 
       // Cooldown por usuario
       const now = Date.now();
       const lastSentTime = userCooldowns.get(targetJid) || 0;
 
       if (CHAT_COOLDOWN_MS > 0 && (now - lastSentTime < CHAT_COOLDOWN_MS)) {
-        console.log(`⏳ Ignorando mensaje de ${targetJid} por cooldown.`);
         continue;
       }
 
+      // Armar la respuesta inteligente según lo que mandó el cliente
+      let textoRespuesta = '';
+
+      if (textoRecibido.includes('acabo de sacar un turno') || textoRecibido.includes('reserva') || textoRecibido.includes('turno')) {
+        textoRespuesta = 
+          `¡Hola! 🙌 Recibimos tu confirmación de turno desde la web.\n\n` +
+          `Tu reserva quedó registrada correctamente en AMB BARBERS. ¡Te esperamos! ✂️💈`;
+      } else {
+        textoRespuesta = 
+          `¡Hola! 👋 Gracias por escribir a AMB BARBERS.\n\n` +
+          `En este momento estamos ocupados o fuera de horario, pero te responderemos a la brevedad.\n\n` +
+          `Si querés reservar un turno ahora mismo de forma rápida, podés hacerlo desde acá:\n` +
+          `${LINK_RESERVAS}\n\n` +
+          `¡Nos vemos!`;
+      }
+
       try {
-        const textoRespuesta = 
-          `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
-          `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
-          `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
-          `Link: ${LINK_RESERVAS}\n\n` +
-          `Nos vemos!`;
-
-        // Responder directamente al socket para evitar bloqueos en la cola durante la prueba
         await sock.sendMessage(targetJid, { text: textoRespuesta });
-
         userCooldowns.set(targetJid, Date.now());
-        console.log(`✅ Respuesta automática enviada instantáneamente a ${targetJid}`);
+        console.log(`✅ Respuesta enviada a ${targetJid}`);
       } catch (e) {
-        console.error(`❌ Error enviando respuesta automática a ${targetJid}:`, e);
+        console.error(`❌ Error enviando mensaje a ${targetJid}:`, e);
       }
     }
   });
@@ -238,7 +230,7 @@ async function startBot() {
   return sock;
 }
 
-// Normaliza un número argentino a formato E.164 para WhatsApp
+// Normaliza un número a formato de WhatsApp
 function toWhatsAppId(numero) {
   let n = numero.replace(/[^\d]/g, '');
   if (!n.startsWith('54')) n = '54' + n;
@@ -246,13 +238,12 @@ function toWhatsAppId(numero) {
   return `${n}@s.whatsapp.net`;
 }
 
-// ---------- Cola de mensajes manuales ----------
+// ---------- Cola de envíos manuales ----------
 const messageQueue = [];
 let isProcessingQueue = false;
 
 const MIN_DELAY_MS = 2500;
 const MAX_DELAY_MS_SEND = 6000;
-
 const RATE_LIMIT_MAX_PER_MINUTE = 15;
 const RATE_LIMIT_WINDOW_MS = 60000;
 let sentTimestamps = [];
@@ -270,7 +261,6 @@ async function processQueue() {
     sentTimestamps = sentTimestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
     if (sentTimestamps.length >= RATE_LIMIT_MAX_PER_MINUTE) {
       const waitMs = RATE_LIMIT_WINDOW_MS - (now - sentTimestamps[0]) + 500;
-      console.log(`⏳ Límite de ${RATE_LIMIT_MAX_PER_MINUTE} msgs/min alcanzado. Esperando ${Math.ceil(waitMs / 1000)}s...`);
       await sleep(waitMs);
       continue;
     }
@@ -278,26 +268,19 @@ async function processQueue() {
     const job = messageQueue.shift();
 
     try {
-      if (!sock || !isReady) {
-        throw new Error('El bot todavía no está conectado a WhatsApp.');
-      }
+      if (!sock || !isReady) throw new Error('El bot no está conectado.');
       
       const jid = job.numero.endsWith('@s.whatsapp.net') || job.numero.endsWith('@lid') ? job.numero : toWhatsAppId(job.numero);
-      console.log(`📤 Mandando mensaje programado a ${jid}...`);
 
       const SEND_TIMEOUT_MS = 20000;
       const result = await Promise.race([
         sock.sendMessage(jid, { text: job.texto }),
-        new Promise((_, rej) =>
-          setTimeout(() => rej(new Error(`Timeout al enviar a ${jid}`)), SEND_TIMEOUT_MS)
-        ),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout de envío')), SEND_TIMEOUT_MS)),
       ]);
 
       sentTimestamps.push(Date.now());
-      console.log(`✅ Mensaje en cola enviado a ${jid}. ID: ${result?.key?.id || 'desconocido'}`);
       job.resolve(result);
     } catch (e) {
-      console.error(`❌ Error mandando mensaje a ${job.numero}:`, e.message);
       job.reject(e);
     }
 
@@ -316,12 +299,8 @@ function sendMessage(numero, texto) {
   });
 }
 
-function getLatestQR() {
-  return latestQR;
-}
-function isConnected() {
-  return isReady;
-}
+function getLatestQR() { return latestQR; }
+function isConnected() { return isReady; }
 
 module.exports = {
   startBot,
@@ -329,5 +308,4 @@ module.exports = {
   toWhatsAppId,
   getLatestQR,
   isConnected,
-  estaDentroDeHorario,
 };
