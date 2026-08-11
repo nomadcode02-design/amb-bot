@@ -12,17 +12,23 @@ const {
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const path = require('path');
-const fs = require('fs');
 
 let sock = null;
 let isReady = false;
 let latestQR = null;
 
-// Formatea el número a formato de WhatsApp
+// Formatea un número argentino a JID real (@s.whatsapp.net)
 function toWhatsAppId(numero) {
   let n = String(numero).replace(/[^\d]/g, '');
+  if (n.length === 0) return '';
+  
+  // Si empieza con 0, se lo saca
+  if (n.startsWith('0')) n = n.slice(1);
+  // Si no tiene prefijo de Argentina
   if (!n.startsWith('54')) n = '54' + n;
+  // Si no tiene el 9 de celular
   if (!n.startsWith('549')) n = '549' + n.slice(2);
+
   return `${n}@s.whatsapp.net`;
 }
 
@@ -68,10 +74,19 @@ async function startBot() {
     for (const msg of event.messages) {
       if (msg.key.fromMe || !msg.message) continue;
 
-      const remoteJid = msg.key.remoteJid;
+      let remoteJid = msg.key.remoteJid;
       if (!remoteJid || remoteJid.endsWith('@g.us')) continue;
 
-      console.log(`📩 Mensaje recibido de ${remoteJid}`);
+      // Extraer el número real si el evento viene etiquetado como LID
+      let numeroReal = remoteJid;
+      if (remoteJid.endsWith('@lid')) {
+        const participant = msg.key.participant || msg.participant;
+        if (participant && participant.endsWith('@s.whatsapp.net')) {
+          numeroReal = participant;
+        }
+      }
+
+      console.log(`📩 Mensaje recibido de ID: ${remoteJid} | Número real detectado: ${numeroReal}`);
 
       const textoConfirmacion = 
 `✅ Turno confirmado - AMB BARBERS
@@ -89,15 +104,16 @@ Hola tiziano lobos! Tu turno quedó agendado:
 Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
 
       try {
+        // Enviar respuesta citando el mensaje original para asegurar la entrega
         await sock.sendMessage(
-          remoteJid, 
+          numeroReal, 
           { text: textoConfirmacion }, 
           { quoted: msg }
         );
 
-        console.log(`✅ Respuesta entregada con éxito a ${remoteJid}`);
+        console.log(`✅ Respuesta entregada con éxito a ${numeroReal}`);
       } catch (err) {
-        console.error(`❌ Error entregando mensaje a ${remoteJid}:`, err);
+        console.error(`❌ Error entregando mensaje a ${numeroReal}:`, err);
       }
     }
   });
@@ -105,16 +121,19 @@ Te esperamos. Si necesitás cambiar el turno, respondé este mensaje.`;
   return sock;
 }
 
-// Función requerida por server.js para enviar reservas y recordatorios
+// Función que consume server.js para enviar reservas web y recordatorios
 async function sendMessage(numero, texto) {
   if (!sock || !isReady) {
     throw new Error('El bot de WhatsApp aún no está conectado.');
   }
 
-  const jid = (typeof numero === 'string' && (numero.endsWith('@s.whatsapp.net') || numero.endsWith('@lid')))
-    ? numero
-    : toWhatsAppId(numero);
+  // Convertir cualquier formato de número a JID válido
+  let jid = numero;
+  if (typeof numero === 'string' && !numero.endsWith('@s.whatsapp.net') && !numero.endsWith('@lid')) {
+    jid = toWhatsAppId(numero);
+  }
 
+  console.log(`📤 Enviando mensaje saliente a JID: ${jid}`);
   return await sock.sendMessage(jid, { text: texto });
 }
 
