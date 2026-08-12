@@ -159,6 +159,31 @@ async function buscarTurnoPorJid(remoteJid, remoteJidAlt) {
   return null;
 }
 
+// Un número es "confiable" si en algún turno anterior (de cualquier fecha)
+// ya recibió una confirmación exitosa del bot. A esos clientes que vuelven
+// a reservar no les pedimos que nos escriban primero para "abrir la
+// ventana" — directo les mandamos la confirmación, forzando el envío. Es
+// razonable: ya interactuaron con el bot antes, no son un desconocido al
+// que le estamos escribiendo de la nada.
+async function esNumeroConfiable(whatsapp) {
+  try {
+    const jidNuevo = await resolverJid(whatsapp);
+    if (!jidNuevo) return false;
+    const anteriores = leerTurnos().filter(t => t.confirmacionEnviada);
+    for (const t of anteriores) {
+      try {
+        const jid = await resolverJid(t.whatsapp);
+        if (jid === jidNuevo) return true;
+      } catch {
+        // no se pudo resolver ese turno viejo, seguimos con el próximo
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 app.post('/api/reservar', async (req, res) => {
   try {
     const { nombre, whatsapp, barbero, servicio, dia, horario } = req.body;
@@ -209,14 +234,16 @@ app.post('/api/reservar', async (req, res) => {
     const fechaLinda = formatearFecha(dia);
     const mensajeCliente = construirMensajeConfirmacion(turno);
 
-    // El cliente va a escribirle al bot desde el link de WhatsApp del
-    // formulario, y ahí es donde se manda la confirmación (ver setOnMensaje
-    // más abajo). Igual probamos mandarla ahora por si ya escribió antes
-    // y la ventana de 24hs ya está abierta.
+    // Si el número ya nos escribió alguna vez antes (cliente que vuelve),
+    // le mandamos la confirmación directo, sin depender de la ventana de
+    // 24hs. Si es la primera vez que reserva, sí necesita escribirle al
+    // bot desde el link de WhatsApp del formulario para abrir la ventana
+    // (ver setOnMensaje más abajo).
+    const confiable = await esNumeroConfiable(whatsapp);
     let whatsappLink = armarLinkWhatsApp(whatsapp, `Hola! Quiero confirmar mi turno para ${fechaLinda} a las ${horario} hs 💈`);
     let mensajeEnviado = false;
     try {
-      const resultado = await sendMessage(whatsapp, mensajeCliente);
+      const resultado = await sendMessage(whatsapp, mensajeCliente, { forzar: confiable });
       mensajeEnviado = resultado.enviado;
       if (mensajeEnviado) {
         turno.confirmacionEnviada = true;
@@ -238,7 +265,7 @@ app.post('/api/reservar', async (req, res) => {
       }
     }
 
-    res.json({ ok: true, turno, mensajeEnviado, whatsappLink });
+    res.json({ ok: true, turno, mensajeEnviado, whatsappLink, confiable });
   } catch (err) {
     if (err instanceof ErrorReserva) {
       return res.status(err.status).json({ error: err.message });
