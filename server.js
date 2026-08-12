@@ -446,10 +446,11 @@ setOnMensaje(async (remoteJid, textoRecibido, remoteJidAlt) => {
 
   // No encontramos ningún turno pendiente para este número.
   return (
-    `¡Hola! Gracias por escribirnos a AMB Barbers 💈\n\n` +
-    `No encontramos ningún turno pendiente asociado a este número. ` +
-    `Si querés reservar, hacelo desde nuestra web y después escribinos por acá para confirmar.\n\n` +
-    `👉 https://nomadcode02-design.github.io/amb-barber/formulario.html`
+    `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
+    `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
+    `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
+    `Link: https://nomadcode02-design.github.io/amb-barber/\n\n` +
+    `Nos vemos!`
   );
 });
 
