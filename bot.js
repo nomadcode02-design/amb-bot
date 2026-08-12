@@ -18,6 +18,7 @@ let sock = null;
 let isReady = false;
 let latestQR = null;
 let onMensajeEntrante = null; // callback que registra server.js
+let intentosReconexion = 0; // para el backoff creciente al reconectar
 
 // Carpeta de datos persistentes. En Railway, montá un Volume en /data
 // y seteá la variable de entorno DATA_DIR=/data — así auth_info y los
@@ -98,24 +99,83 @@ function delayAleatorio() {
 // 2) Cooldown por contacto: además, a un mismo número no se le manda más de
 //    un mensaje dentro de esa misma ventana corta, por si algo dispara un
 //    envío duplicado por error.
-const COOLDOWN_GLOBAL_MS = 12000; // mínimo entre dos envíos, sean a quien sean
-const COOLDOWN_CONTACTO_MS = 45000; // mínimo entre dos mensajes al MISMO número
+// 3) Jitter: el espacio entre envíos no es siempre el mismo número exacto de
+//    ms — un patrón perfectamente regular también es una señal de bot.
+// 4) Tope de seguridad por hora/día: el uso real de esta barbería es ~16
+//    turnos/día como mucho, así que si en algún momento se detectan muchos
+//    más mensajes que eso, casi seguro es un bug (loop, reintento en cadena,
+//    etc.) y no gente real reservando. En ese caso se frena la cola un rato
+//    en vez de seguir mandando a lo loco.
+// 5) Circuit breaker: si varios envíos seguidos fallan (WhatsApp rechazando),
+//    se pausa la cola unos minutos en vez de insistir sin parar.
+const COOLDOWN_GLOBAL_MS = 12000; // base entre dos envíos, sean a quien sean
+const COOLDOWN_GLOBAL_JITTER_MS = 4000; // +/- variación random sobre la base
+const COOLDOWN_CONTACTO_MS = 45000; // base entre dos mensajes al MISMO número
+const COOLDOWN_CONTACTO_JITTER_MS = 10000; // +/- variación random sobre la base
+
+const MAX_MENSAJES_POR_HORA = 40; // muy por encima del uso real (~16/día)
+const MAX_MENSAJES_POR_DIA = 100;
+
+const MAX_FALLOS_SEGUIDOS = 4;
+const PAUSA_POR_FALLOS_MS = 10 * 60 * 1000; // 10 minutos
 
 let colaEnvios = Promise.resolve();
 let ultimoEnvioGlobal = 0;
 const ultimoEnvioPorJid = {};
+let historialEnvios = []; // timestamps (ms) de envíos exitosos, para los topes
+let fallosSeguidos = 0;
+let pausadoHasta = 0;
+
+function jitter(base, variacion) {
+  return base + Math.round((Math.random() * 2 - 1) * variacion);
+}
+
+function limpiarHistorialViejo() {
+  const unDiaAtras = Date.now() - 24 * 3600000;
+  historialEnvios = historialEnvios.filter(t => t > unDiaAtras);
+}
+
+function envioDentroDeTopes() {
+  limpiarHistorialViejo();
+  const ahora = Date.now();
+  const unaHoraAtras = ahora - 3600000;
+  const enUltimaHora = historialEnvios.filter(t => t > unaHoraAtras).length;
+  const enUltimoDia = historialEnvios.length;
+  if (enUltimaHora >= MAX_MENSAJES_POR_HORA) {
+    console.warn(`🛑 Tope de seguridad: ${enUltimaHora} mensajes en la última hora (máx ${MAX_MENSAJES_POR_HORA}). Pausando envíos, el bot sigue conectado.`);
+    return false;
+  }
+  if (enUltimoDia >= MAX_MENSAJES_POR_DIA) {
+    console.warn(`🛑 Tope de seguridad: ${enUltimoDia} mensajes en las últimas 24hs (máx ${MAX_MENSAJES_POR_DIA}). Pausando envíos, el bot sigue conectado.`);
+    return false;
+  }
+  return true;
+}
 
 function encolarEnvio(jid, fn) {
   colaEnvios = colaEnvios.then(async () => {
     const ahora = () => Date.now();
 
-    // Esperar el cooldown global (desde el último envío, sea a quien sea)
-    let espera = COOLDOWN_GLOBAL_MS - (ahora() - ultimoEnvioGlobal);
+    // Si el circuit breaker está activo por fallos seguidos, esperar esa pausa.
+    if (pausadoHasta > ahora()) {
+      const restante = pausadoHasta - ahora();
+      console.warn(`⏸️ Cola en pausa por fallos seguidos: esperando ${Math.ceil(restante / 1000)}s más antes de reintentar.`);
+      await new Promise(r => setTimeout(r, restante));
+    }
+
+    // Tope de seguridad: si se superó el máximo esperable, esperar 5 min y
+    // reevaluar (no se descarta el mensaje, solo se retrasa).
+    while (!envioDentroDeTopes()) {
+      await new Promise(r => setTimeout(r, 5 * 60 * 1000));
+    }
+
+    // Esperar el cooldown global (desde el último envío, sea a quien sea), con jitter
+    let espera = jitter(COOLDOWN_GLOBAL_MS, COOLDOWN_GLOBAL_JITTER_MS) - (ahora() - ultimoEnvioGlobal);
     if (espera > 0) await new Promise(r => setTimeout(r, espera));
 
-    // Esperar el cooldown por contacto, si a ESE jid ya se le mandó algo hace poco
+    // Esperar el cooldown por contacto, si a ESE jid ya se le mandó algo hace poco, con jitter
     const ultimoAEsteJid = ultimoEnvioPorJid[jid] || 0;
-    espera = COOLDOWN_CONTACTO_MS - (ahora() - ultimoAEsteJid);
+    espera = jitter(COOLDOWN_CONTACTO_MS, COOLDOWN_CONTACTO_JITTER_MS) - (ahora() - ultimoAEsteJid);
     if (espera > 0) {
       console.log(`⏳ Cooldown: esperando ${Math.ceil(espera / 1000)}s antes de volver a escribirle a ${jid}`);
       await new Promise(r => setTimeout(r, espera));
@@ -123,7 +183,22 @@ function encolarEnvio(jid, fn) {
 
     ultimoEnvioGlobal = Date.now();
     ultimoEnvioPorJid[jid] = Date.now();
-    return fn();
+
+    try {
+      const resultado = await fn();
+      fallosSeguidos = 0;
+      historialEnvios.push(Date.now());
+      return resultado;
+    } catch (err) {
+      fallosSeguidos++;
+      console.error(`⚠️ Fallo de envío (${fallosSeguidos}/${MAX_FALLOS_SEGUIDOS} seguidos):`, err.message || err);
+      if (fallosSeguidos >= MAX_FALLOS_SEGUIDOS) {
+        pausadoHasta = Date.now() + PAUSA_POR_FALLOS_MS;
+        console.warn(`🛑 Demasiados fallos seguidos. Pausando la cola de envíos ${PAUSA_POR_FALLOS_MS / 60000} minutos. El bot sigue conectado y escuchando mensajes.`);
+        fallosSeguidos = 0;
+      }
+      throw err;
+    }
   });
   return colaEnvios;
 }
@@ -182,10 +257,17 @@ async function startBot() {
       isReady = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       console.log('❌ Conexión cerrada. Código:', statusCode);
-      setTimeout(startBot, 3000);
+      // Backoff creciente en vez de reintentar siempre a los 3s: reconectar
+      // en loop rápido después de un corte es otra señal que puede sumar
+      // sospecha. Se resetea el contador apenas la conexión vuelve a abrir.
+      intentosReconexion++;
+      const espera = Math.min(3000 * 2 ** (intentosReconexion - 1), 5 * 60 * 1000);
+      console.log(`🔁 Reintentando conexión en ${Math.ceil(espera / 1000)}s (intento ${intentosReconexion})`);
+      setTimeout(startBot, espera);
     } else if (connection === 'open') {
       isReady = true;
       latestQR = null;
+      intentosReconexion = 0;
       console.log('✅ BOT CONECTADO EXITOSAMENTE Y LISTO');
     }
   });

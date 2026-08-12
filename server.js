@@ -45,22 +45,6 @@ function guardarTodosLosTurnos(turnos) {
   fs.writeFileSync(TURNOS_FILE, JSON.stringify(turnos, null, 2));
 }
 
-// ---------- Blindaje contra reservas simultáneas ----------
-// Aunque hoy el chequeo (¿está libre ese horario?) y el guardado son
-// operaciones sincrónicas -así que en la práctica ya no se pisan dentro
-// de un mismo proceso-, esta cola lo deja garantizado de forma explícita:
-// toda la sección "leer turnos → chequear → guardar" se ejecuta de a una
-// por vez, en orden de llegada, nunca en paralelo. Sirve tanto de refuerzo
-// ahora como de protección futura si en algún momento esa sección pasa a
-// tener código asincrónico en el medio.
-let colaTurnos = Promise.resolve();
-function conLockDeTurnos(fn) {
-  const resultado = colaTurnos.then(fn, fn);
-  // Si fn tira error, igual dejamos la cola lista para la siguiente reserva
-  colaTurnos = resultado.catch(() => {});
-  return resultado;
-}
-
 function leerBloqueos() {
   return JSON.parse(fs.readFileSync(BLOQUEOS_FILE, 'utf-8'));
 }
@@ -112,16 +96,35 @@ function construirMensajeConfirmacion(turno) {
   );
 }
 
-// Busca, entre TODOS los turnos (ya se haya mandado la confirmación o no),
-// cuál corresponde al número que acaba de escribirle al bot. Así, si alguien
-// ya recibió su confirmación y escribe igual "por las dudas", le volvemos a
-// mostrar los datos de su turno en vez de decirle que no encontramos nada.
+// Varias versiones del recordatorio, elegidas al azar: mandar siempre el
+// mismo string idéntico a distintos números es una señal de bot más fácil
+// de detectar que variar un poco la redacción.
+function textoRecordatorio(turno) {
+  const variantes = [
+    `⏰ ¡Hola ${turno.nombre}! Te recordamos que tenés un turno hoy a las ${turno.horario} hs con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!`,
+    `⏰ ${turno.nombre}, este es tu recordatorio: hoy a las ${turno.horario} hs tenés turno con ${turno.barbero} para ${turno.servicio}. ¡Te esperamos!`,
+    `💈 Hola ${turno.nombre}! No te olvides de tu turno de hoy a las ${turno.horario} hs con ${turno.barbero} (${turno.servicio}). ¡Nos vemos pronto!`,
+  ];
+  return variantes[Math.floor(Math.random() * variantes.length)];
+}
+
+// Busca, entre los turnos SIN confirmar todavía, cuál corresponde al
+// número que acaba de escribirle al bot. Resuelve el JID de cada turno
+// candidato y lo compara contra el JID entrante (en cualquiera de sus
+// dos formas: @lid o @s.whatsapp.net).
+// Quedan afuera los turnos que ya pasaron de horario o que se marcaron
+// como completados en el panel: si el cliente escribe después de eso,
+// no tiene sentido mandarle de nuevo "tu turno quedó agendado" con una
+// fecha vieja, así que directamente cae en el mensaje de "no encontramos
+// turno pendiente, reservá de nuevo".
 async function buscarTurnoPorJid(remoteJid, remoteJidAlt) {
+  const ahora = new Date();
   const turnos = leerTurnos();
   const candidatos = turnos
+    .filter(t => !t.confirmacionEnviada && !t.completado && fechaHoraDelTurno(t) > ahora)
     .sort((a, b) => new Date(b.creado) - new Date(a.creado)); // más recientes primero
 
-  console.log(`🔍 Buscando turno para remoteJid=${remoteJid} remoteJidAlt=${remoteJidAlt}. Candidatos sin confirmar: ${candidatos.length}`);
+  console.log(`🔍 Buscando turno para remoteJid=${remoteJid} remoteJidAlt=${remoteJidAlt}. Candidatos vigentes sin confirmar: ${candidatos.length}`);
 
   for (const turno of candidatos) {
     try {
@@ -149,43 +152,32 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Servicio o barbero inválido.' });
     }
 
-    // Todo lo que lee y después escribe turnos.json va adentro del lock,
-    // así dos reservas que llegan casi al mismo tiempo para el mismo
-    // horario nunca pueden "ganarle" una a la otra por una carrera.
-    const resultadoReserva = await conLockDeTurnos(() => {
-      const turnosExistentes = leerTurnos();
-      const yaOcupado = turnosExistentes.some(
-        t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
-      );
-      if (yaOcupado) {
-        return { error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` };
-      }
-
-      const bloqueos = leerBloqueos();
-      const estaBloqueado = bloqueos.some(
-        b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
-      );
-      if (estaBloqueado) {
-        return { error: 'Ese horario no está disponible. Elegí otro.' };
-      }
-
-      const turno = {
-        id: Date.now().toString(),
-        nombre, whatsapp, barbero: barberoNombre,
-        servicio: servicioInfo.nombre, precio: servicioInfo.precio,
-        dia, horario,
-        creado: new Date().toISOString(),
-        recordatorioEnviado: false,
-        completado: false,
-      };
-      guardarTurno(turno);
-      return { turno };
-    });
-
-    if (resultadoReserva.error) {
-      return res.status(409).json({ error: resultadoReserva.error });
+    const turnosExistentes = leerTurnos();
+    const yaOcupado = turnosExistentes.some(
+      t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
+    );
+    if (yaOcupado) {
+      return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
     }
-    const turno = resultadoReserva.turno;
+
+    const bloqueos = leerBloqueos();
+    const estaBloqueado = bloqueos.some(
+      b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
+    );
+    if (estaBloqueado) {
+      return res.status(409).json({ error: 'Ese horario no está disponible. Elegí otro.' });
+    }
+
+    const turno = {
+      id: Date.now().toString(),
+      nombre, whatsapp, barbero: barberoNombre,
+      servicio: servicioInfo.nombre, precio: servicioInfo.precio,
+      dia, horario,
+      creado: new Date().toISOString(),
+      recordatorioEnviado: false,
+      completado: false,
+    };
+    guardarTurno(turno);
 
     const fechaLinda = formatearFecha(dia);
     const mensajeCliente = construirMensajeConfirmacion(turno);
@@ -420,11 +412,7 @@ cron.schedule('* * * * *', async () => {
     if (minutosFaltantes <= minutosDeAviso && minutosFaltantes > 0) {
       console.log(`⏰ Intentando recordatorio a ${turno.nombre} (${turno.whatsapp})`);
       try {
-        const resultado = await sendMessage(
-          turno.whatsapp,
-          `⏰ ¡Hola ${turno.nombre}! Te recordamos que tenés un turno hoy a las ${turno.horario} hs ` +
-          `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!`
-        );
+        const resultado = await sendMessage(turno.whatsapp, textoRecordatorio(turno));
         if (resultado.enviado) {
           turno.recordatorioEnviado = true;
           huboCambios = true;
@@ -456,14 +444,12 @@ setOnMensaje(async (remoteJid, textoRecibido, remoteJidAlt) => {
     return construirMensajeConfirmacion(turno);
   }
 
-  // No encontramos ningún turno para este número: mensaje genérico de
-  // "ausencia" para cualquier mensaje random que no sea sobre un turno.
+  // No encontramos ningún turno pendiente para este número.
   return (
-    `¡Hola! 👋 Gracias por comunicarte con AMB BARBERS.\n` +
-    `En este momento no estamos respondiendo. Lo haremos lo antes posible!\n\n` +
-    `Podés reservar tu turno igual desde nuestra página y te confirmamos el lugar 😉\n\n` +
-    `Link: https://nomadcode02-design.github.io/amb-barber/\n\n` +
-    `Nos vemos!`
+    `¡Hola! Gracias por escribirnos a AMB Barbers 💈\n\n` +
+    `No encontramos ningún turno pendiente asociado a este número. ` +
+    `Si querés reservar, hacelo desde nuestra web y después escribinos por acá para confirmar.\n\n` +
+    `👉 https://nomadcode02-design.github.io/amb-barber/formulario.html`
   );
 });
 
