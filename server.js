@@ -52,6 +52,27 @@ function guardarBloqueos(bloqueos) {
   fs.writeFileSync(BLOQUEOS_FILE, JSON.stringify(bloqueos, null, 2));
 }
 
+// ---------- Cola de escritura para reservas ----------
+// Si dos personas reservan casi al mismo tiempo, sin esto ambas peticiones
+// podrían leer turnos.json "viejo" a la vez, chequear que el horario está
+// libre, y las dos terminar guardando: una se pisa a la otra, o las dos
+// quedan agendadas en el mismo horario con el mismo barbero. Encolando el
+// chequeo + guardado (uno a la vez, en orden) eso deja de ser posible: la
+// segunda reserva siempre ve el turno que acaba de guardar la primera.
+class ErrorReserva extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+
+let colaReservas = Promise.resolve();
+function encolarReserva(fn) {
+  const resultado = colaReservas.then(fn, fn);
+  colaReservas = resultado.then(() => {}, () => {}); // la cola sigue aunque una reserva falle
+  return resultado;
+}
+
 function generarHorariosEntre(horaInicio, horaFin) {
   const horarios = [];
   let h = Number(horaInicio.split(':')[0]);
@@ -152,32 +173,38 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(400).json({ error: 'Servicio o barbero inválido.' });
     }
 
-    const turnosExistentes = leerTurnos();
-    const yaOcupado = turnosExistentes.some(
-      t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
-    );
-    if (yaOcupado) {
-      return res.status(409).json({ error: `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.` });
-    }
+    // Chequeo de disponibilidad + guardado, encolado: así dos reservas que
+    // llegan casi al mismo tiempo nunca se pisan ni terminan ocupando el
+    // mismo horario (ver comentario de encolarReserva más arriba).
+    const turno = await encolarReserva(() => {
+      const turnosExistentes = leerTurnos();
+      const yaOcupado = turnosExistentes.some(
+        t => t.dia === dia && t.horario === horario && t.barbero === barberoNombre
+      );
+      if (yaOcupado) {
+        throw new ErrorReserva(409, `${barberoNombre} ya tiene un turno ocupado a esa hora. Elegí otro horario.`);
+      }
 
-    const bloqueos = leerBloqueos();
-    const estaBloqueado = bloqueos.some(
-      b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
-    );
-    if (estaBloqueado) {
-      return res.status(409).json({ error: 'Ese horario no está disponible. Elegí otro.' });
-    }
+      const bloqueos = leerBloqueos();
+      const estaBloqueado = bloqueos.some(
+        b => b.dia === dia && b.horario === horario && (b.barbero === 'Todos' || b.barbero === barbero)
+      );
+      if (estaBloqueado) {
+        throw new ErrorReserva(409, 'Ese horario no está disponible. Elegí otro.');
+      }
 
-    const turno = {
-      id: Date.now().toString(),
-      nombre, whatsapp, barbero: barberoNombre,
-      servicio: servicioInfo.nombre, precio: servicioInfo.precio,
-      dia, horario,
-      creado: new Date().toISOString(),
-      recordatorioEnviado: false,
-      completado: false,
-    };
-    guardarTurno(turno);
+      const nuevoTurno = {
+        id: Date.now().toString(),
+        nombre, whatsapp, barbero: barberoNombre,
+        servicio: servicioInfo.nombre, precio: servicioInfo.precio,
+        dia, horario,
+        creado: new Date().toISOString(),
+        recordatorioEnviado: false,
+        completado: false,
+      };
+      guardarTurno(nuevoTurno);
+      return nuevoTurno;
+    });
 
     const fechaLinda = formatearFecha(dia);
     const mensajeCliente = construirMensajeConfirmacion(turno);
@@ -213,6 +240,9 @@ app.post('/api/reservar', async (req, res) => {
 
     res.json({ ok: true, turno, mensajeEnviado, whatsappLink });
   } catch (err) {
+    if (err instanceof ErrorReserva) {
+      return res.status(err.status).json({ error: err.message });
+    }
     console.error(err);
     res.status(500).json({ error: err.message || 'Error interno al procesar la reserva.' });
   }
