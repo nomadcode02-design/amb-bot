@@ -1,0 +1,54 @@
+// TODO: la duración es un estimado (45 min) hasta que definas cuánto dura cada uno.
+const SERVICIOS_LISTA = [
+  { id: "corte-lavado", nombre: "Corte moderno", detalle: "Incluye lavado", precio: "$12.000", duracion: 45 },
+  { id: "corte-mascarilla", nombre: "Corte moderno + Mascarilla facial", detalle: "Puntos negros", precio: "$15.000", duracion: 45 },
+  { id: "corte-nutricion", nombre: "Corte moderno + Nutrición capilar", detalle: "", precio: "$20.000", duracion: 45 },
+  { id: "corte-completo", nombre: "Corte moderno + Mascarilla facial + Nutrición capilar", detalle: "", precio: "$25.000", duracion: 60 },
+];
+
+const BARBEROS_LISTA = [
+  { id: "sebastian", nombre: "Sebastian" },
+  { id: "ale", nombre: "Ale" },
+];
+
+// Horario de atención:
+// Lunes a Jueves: 09:00 a 13:00 y 17:00 a 21:00 (turno partido, mediodía cerrado)
+// Viernes y Sábado: 09:00 a 21:00 corrido
+// Domingo: cerrado
+//
+// Cada día de la semana (0=domingo ... 6=sábado) tiene una lista de franjas.
+// Un día cerrado es una lista vacía []. Si algún día tiene una sola franja
+// corrida (como viernes/sábado), va con un solo objeto en la lista.
+const HORARIOS_POR_DIA = {
+  0: [], // domingo - cerrado
+  1: [{ apertura: "09:00", cierre: "13:00" }, { apertura: "17:00", cierre: "21:00" }], // lunes
+  2: [{ apertura: "09:00", cierre: "13:00" }, { apertura: "17:00", cierre: "21:00" }], // martes
+  3: [{ apertura: "09:00", cierre: "13:00" }, { apertura: "17:00", cierre: "21:00" }], // miércoles
+  4: [{ apertura: "09:00", cierre: "13:00" }, { apertura: "17:00", cierre: "21:00" }], // jueves
+  5: [{ apertura: "09:00", cierre: "21:00" }], // viernes
+  6: [{ apertura: "09:00", cierre: "21:00" }], // sábado
+};
+
+// URL del backend del bot (se completa cuando esté desplegado)
+const API_URL = "https://amb-bot-production.up.railway.app/api/reservar";
+
+// ---- Compatibilidad con server.js ----
+// server.js hace SERVICIOS[servicio] y BARBEROS[barbero] tratándolos como
+// objetos indexados por id (el "servicio" y "barbero" que manda el
+// formulario son justamente esos ids, ej: "corte-lavado", "sebastian").
+// Se arman acá mismo a partir de las listas de arriba, para no tener que
+// mantener los datos escritos dos veces.
+const SERVICIOS = {};
+SERVICIOS_LISTA.forEach(s => { SERVICIOS[s.id] = s; });
+
+const BARBEROS = {};
+BARBEROS_LISTA.forEach(b => { BARBEROS[b.id] = b.nombre; });
+
+module.exports = {
+  SERVICIOS,       // { "corte-lavado": {nombre, detalle, precio, duracion}, ... } -> lo que usa server.js
+  BARBEROS,        // { "sebastian": "Sebastian", "ale": "Ale" } -> lo que usa server.js
+  SERVICIOS_LISTA, // array original, por si el formulario u otro código lo necesita así
+  BARBEROS_LISTA,  // array original, por si el formulario u otro código lo necesita así
+  HORARIOS_POR_DIA,
+  API_URL,
+};
