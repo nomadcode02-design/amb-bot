@@ -63,6 +63,18 @@ function guardarMensajes(mensajes) {
   const recortados = mensajes.slice(-MAX_MENSAJES_GUARDADOS);
   fs.writeFileSync(MENSAJES_FILE, JSON.stringify(recortados, null, 2));
 }
+function mensajeEntranteYaProcesado(messageId) {
+  if (!messageId) return null;
+  try {
+    const ids = JSON.parse(fs.readFileSync(MENSAJES_RECIBIDOS_FILE, 'utf-8'));
+    if (!Array.isArray(ids)) throw new Error('El registro de mensajes recibidos no es una lista válida.');
+    return ids.includes(messageId);
+  } catch (e) {
+    console.error('⚠️ No se pudo comprobar el ID entrante:', e.message);
+    return null;
+  }
+}
+
 function registrarMensajeEntranteUnico(messageId) {
   if (!messageId) return null;
   try {
@@ -73,7 +85,7 @@ function registrarMensajeEntranteUnico(messageId) {
     fs.writeFileSync(MENSAJES_RECIBIDOS_FILE, JSON.stringify(ids.slice(-MAX_MENSAJES_RECIBIDOS)));
     return true;
   } catch (e) {
-    console.error('⚠️ No se pudo comprobar/guardar el ID entrante:', e.message);
+    console.error('⚠️ No se pudo guardar el ID entrante:', e.message);
     return null;
   }
 }
@@ -933,19 +945,26 @@ app.post('/webhook', async (req, res) => {
         const numeroCliente = mensaje.from;
         const texto = mensaje.text?.body || '';
 
-        // Persistir primero BAJA/ALTA: si el proceso cae justo después, un reintento
-        // de Meta no puede hacer que se pierda el cambio de consentimiento.
-        if (esPedidoDeBaja(texto)) guardarBaja(numeroCliente, true);
-        else if (esPedidoDeAlta(texto)) guardarBaja(numeroCliente, false);
-
-        const registroEntrante = registrarMensajeEntranteUnico(mensaje.id);
-        if (registroEntrante === false) {
+        const yaProcesado = mensajeEntranteYaProcesado(mensaje.id);
+        if (yaProcesado === true) {
           console.log(`↩️ Evento entrante duplicado ignorado: ${mensaje.id}`);
           continue;
         }
-        // Si falla el registro de deduplicación, no procesar mensajes normales;
-        // BAJA/ALTA siguen teniendo prioridad para que puedan gestionar su permiso.
-        if (registroEntrante === null && !esPedidoDeBaja(texto) && !esPedidoDeAlta(texto)) continue;
+
+        if (esPedidoDeBaja(texto)) {
+          // La BAJA se persiste antes de marcar el ID: ante un fallo de disco
+          // o reinicio, priorizamos no volver a escribirle a quien pidió parar.
+          guardarBaja(numeroCliente, true);
+          if (yaProcesado === false) registrarMensajeEntranteUnico(mensaje.id);
+        } else if (esPedidoDeAlta(texto)) {
+          // La ALTA se marca primero: un reintento viejo no debe borrar una
+          // BAJA más reciente si el registro de duplicados está fallando.
+          if (yaProcesado !== false || registrarMensajeEntranteUnico(mensaje.id) !== true) continue;
+          guardarBaja(numeroCliente, false);
+        } else {
+          // Ante un fallo del registro, no enviar respuestas normales.
+          if (yaProcesado !== false || registrarMensajeEntranteUnico(mensaje.id) !== true) continue;
+        }
 
         // El cliente nos escribió: se abre la ventana de 24hs en la que Meta
         // permite responder sin plantilla.
