@@ -453,8 +453,8 @@ function textoHitoFidelidad(hito) {
 //  1) Si el cliente YA ganó un premio con un corte anterior, este turno lo usa.
 //  2) Si ESTE turno lo haría ganar algo (activar tarjeta, 50%, gratis),
 //     se lo avisa en condicional: recién cuenta cuando venga (tick del barbero).
-function textoAvisoAnticipado(numeroCliente) {
-  if (!FIDELIDAD_TARJETA_ACTIVA) return '';
+function textoAvisoAnticipado(numeroCliente, consentimientoFidelidad) {
+  if (!FIDELIDAD_TARJETA_ACTIVA || consentimientoFidelidad !== true) return '';
   const cortes = contarCortesConfirmados(numeroCliente);
   const lineas = [];
 
@@ -482,7 +482,9 @@ function textoAvisoAnticipado(numeroCliente) {
 function buscarHitoPendiente(numeroCliente) {
   const numeroNormalizado = limpiarNumero(numeroCliente);
   return leerTurnos().find(t =>
-    t.hitoFidelidad && !t.hitoFidelidadAvisado && limpiarNumero(t.whatsapp) === numeroNormalizado
+    t.hitoFidelidad && !t.hitoFidelidadAvisado &&
+    t.consentimientoFidelidadWhatsapp?.aceptado === true &&
+    limpiarNumero(t.whatsapp) === numeroNormalizado
   ) || null;
 }
 
@@ -516,7 +518,7 @@ function buscarTurnoPorNumero(numeroCliente) {
 
 app.post('/api/reservar', async (req, res) => {
   try {
-    const { nombre, whatsapp, barbero, servicio, dia, horario, aceptaWhatsapp } = req.body;
+    const { nombre, whatsapp, barbero, servicio, dia, horario, aceptaWhatsapp, aceptaFidelidadWhatsapp } = req.body;
 
     if (!nombre || !whatsapp || !barbero || !servicio || !dia || !horario) {
       return res.status(400).json({ error: 'Faltan datos de la reserva.' });
@@ -579,6 +581,7 @@ app.post('/api/reservar', async (req, res) => {
         recordatorioEnviado: false,
         completado: false,
         consentimientoWhatsapp: { aceptado: true, fecha: new Date().toISOString() },
+        consentimientoFidelidadWhatsapp: { aceptado: aceptaFidelidadWhatsapp === true, fecha: new Date().toISOString() },
       };
       guardarTurno(turno);
       return { turno };
@@ -939,7 +942,7 @@ app.post('/webhook', async (req, res) => {
       // No marcar todavía: primero hay que comprobar que Meta aceptó el envío.
       turnoConfirmacionPendienteId = turno.id;
       respuesta = construirMensajeConfirmacion(turno);
-      const avisoAnticipado = textoAvisoAnticipado(numeroCliente);
+      const avisoAnticipado = textoAvisoAnticipado(numeroCliente, turno.consentimientoFidelidadWhatsapp?.aceptado === true);
       if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
     }
 
