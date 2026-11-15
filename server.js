@@ -387,14 +387,14 @@ function minutosDeAvisoPara(turno) {
   return 5;
 }
 
-// El recordatorio solo aplica si el turno se reservó con 24hs o menos de
+// El recordatorio solo aplica si el turno es futuro y se reservó con 24hs o menos de
 // anticipación (osea, entre el momento de reservar y la hora del turno no
 // pasan más de 24hs). Si alguien reserva con más anticipación que eso
 // (ej: para la semana que viene), no le llega recordatorio.
 function correspondeRecordatorio(turno) {
   const horaTurno = fechaHoraDelTurno(turno);
   const anticipacionTotal = (horaTurno - new Date(turno.creado)) / 3600000; // en horas
-  return anticipacionTotal <= 24;
+  return anticipacionTotal > 0 && anticipacionTotal <= 24;
 }
 
 function construirMensajeConfirmacion(turno) {
