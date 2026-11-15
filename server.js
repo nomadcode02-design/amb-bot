@@ -1041,76 +1041,106 @@ app.post('/webhook', async (req, res) => {
 app.get('/', (req, res) => res.send('AMB Barbers bot API OK'));
 
 const omitidosLogueados = new Set();
+let recordatoriosEnCurso = false;
+const ESPERA_ENTRE_INTENTOS_RECORDATORIO_MS = 10 * 60 * 1000;
 
-// Recordatorios. Solo salen si: (1) están activados, (2) el cliente nos escribió en las
-// últimas 24hs, (3) no pidió la baja y (4) no se agotaron los intentos. Antes, si el envío
-// fallaba se reintentaba CADA MINUTO durante media hora: decenas de intentos rechazados
-// por turno, que Meta puede ver como mensajería no autorizada.
+// Actualiza cada recordatorio bajo el mismo bloqueo que las reservas para no
+// pisar turnos nuevos ni perder el estado si el proceso se reinicia.
+async function actualizarEstadoRecordatorio(turnoId, cambios) {
+  return conLockDeTurnos(() => {
+    const actuales = leerTurnos();
+    const actual = actuales.find(t => String(t.id) === String(turnoId));
+    if (!actual) return false;
+    Object.assign(actual, cambios);
+    guardarTodosLosTurnos(actuales);
+    return true;
+  });
+}
+
+// Recordatorios: una sola ejecución a la vez. Se persiste el intento ANTES
+// del envío para que un reinicio no repita un mensaje que Meta quizá aceptó.
 cron.schedule('* * * * *', async () => {
- try {
-  if (!RECORDATORIOS_ACTIVOS) return;
-  const ahora = new Date();
-  const turnos = leerTurnos();
-  const cambiosPorId = new Map();
+  if (recordatoriosEnCurso) {
+    console.log('⏭️ Se omite este ciclo: el cron anterior de recordatorios sigue activo.');
+    return;
+  }
+  recordatoriosEnCurso = true;
+  try {
+    if (!RECORDATORIOS_ACTIVOS) return;
+    const ahora = new Date();
+    const turnos = leerTurnos();
 
-  for (const turno of turnos) {
-    if (turno.recordatorioEnviado) continue;
-    // No enviar recordatorios de turnos antiguos o importados sin constancia
-    // explícita del consentimiento de WhatsApp.
-    if (turno.consentimientoWhatsapp?.aceptado !== true) continue;
-    if ((turno.recordatorioIntentos || 0) >= MAX_INTENTOS_RECORDATORIO) continue;
-    if (!correspondeRecordatorio(turno)) continue; // se reservó con más de 24hs de anticipación
+    for (const turno of turnos) {
+      if (turno.recordatorioEnviado) continue;
+      if (turno.consentimientoWhatsapp?.aceptado !== true) continue;
+      if ((turno.recordatorioIntentos || 0) >= MAX_INTENTOS_RECORDATORIO) continue;
 
-    const horaTurno = fechaHoraDelTurno(turno);
-    const minutosFaltantes = (horaTurno - ahora) / 60000;
-    const minutosDeAviso = minutosDeAvisoPara(turno);
+      const horaTurno = fechaHoraDelTurno(turno);
+      const timestampTurno = horaTurno.getTime();
+      if (!Number.isFinite(timestampTurno)) {
+        console.error(`⚠️ Se omite recordatorio con fecha/hora inválida (turno ${turno.id}).`);
+        continue;
+      }
 
-    if (minutosFaltantes <= minutosDeAviso && minutosFaltantes > 0) {
-      if (estaDadoDeBaja(turno.whatsapp)) continue; // pidió no recibir mensajes
+      const minutosFaltantes = (timestampTurno - ahora.getTime()) / 60000;
+      // Nunca enviar para turnos ya comenzados o pasados.
+      if (minutosFaltantes <= 0) continue;
+      if (!correspondeRecordatorio(turno)) continue;
 
-      // Solo a quien nos escribió en las últimas 24hs: fuera de esa ventana WhatsApp solo
-      // permite iniciar conversaciones con plantillas aprobadas.
+      const minutosDeAviso = minutosDeAvisoPara(turno);
+      if (minutosFaltantes > minutosDeAviso) continue;
+
+      if (estaDadoDeBaja(turno.whatsapp)) continue;
+
+      // Solo se permite texto libre dentro de la ventana abierta por el cliente.
       if (!ventanaAbierta(turno.whatsapp)) {
         if (!omitidosLogueados.has(turno.id)) {
           omitidosLogueados.add(turno.id);
-          console.log(`⏸️ Recordatorio omitido para ${turno.nombre}: no nos escribió en las últimas 24hs.`);
+          console.log(`⏸️ Recordatorio omitido para ${turno.nombre}: ventana de atención cerrada.`);
         }
         continue;
       }
 
-      console.log(`⏰ Intentando recordatorio a ${turno.nombre} (${turno.whatsapp})`);
-      const cambios = { recordatorioIntentos: (turno.recordatorioIntentos || 0) + 1 };
-      cambiosPorId.set(turno.id, cambios);
+      const ultimoIntento = turno.recordatorioUltimoIntento
+        ? new Date(turno.recordatorioUltimoIntento).getTime()
+        : 0;
+      if (ultimoIntento && (!Number.isFinite(ultimoIntento) ||
+          ahora.getTime() - ultimoIntento < ESPERA_ENTRE_INTENTOS_RECORDATORIO_MS)) {
+        continue;
+      }
+
+      const intentos = (turno.recordatorioIntentos || 0) + 1;
+      const guardado = await actualizarEstadoRecordatorio(turno.id, {
+        recordatorioIntentos: intentos,
+        recordatorioUltimoIntento: new Date().toISOString()
+      });
+      if (!guardado) continue;
+
+      console.log(`⏰ Intento ${intentos}/${MAX_INTENTOS_RECORDATORIO} de recordatorio para ${turno.nombre} (${turno.whatsapp}).`);
       try {
         const resultado = await enviarYRegistrar(
           turno.whatsapp,
           `⏰ ¡Hola ${turno.nombre}! Te recordamos tu turno el ${formatearFecha(turno.dia)} a las ${turno.horario} hs ` +
-          `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\n\n` +
+          `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\\n\\n` +
           `Si necesitás cambiarlo o hablar con una persona, escribinos o llamanos al ${TELEFONO_CONTACTO_HUMANO}. ` +
           `Si no querés recibir más recordatorios, respondé BAJA.`,
           'recordatorio'
         );
         if (resultado.enviado) {
-          cambios.recordatorioEnviado = true;
-          console.log(`✅ Recordatorio enviado a ${turno.nombre} (${turno.whatsapp})`);
+          await actualizarEstadoRecordatorio(turno.id, { recordatorioEnviado: true });
+          console.log(`✅ Meta aceptó el recordatorio para ${turno.nombre} (${turno.whatsapp}).`);
         } else {
-          console.log(`⏸️ Recordatorio no enviado a ${turno.nombre} (intento ${cambios.recordatorioIntentos}/${MAX_INTENTOS_RECORDATORIO}).`);
+          console.log(`⏸️ Meta no aceptó el recordatorio para ${turno.nombre}; intento ${intentos}/${MAX_INTENTOS_RECORDATORIO} registrado.`);
         }
       } catch (e) {
-        console.error('Error enviando recordatorio:', e);
+        console.error(`❌ Error enviando recordatorio a ${turno.nombre}:`, e.message);
       }
     }
+  } catch (e) {
+    console.error('Error general en el cron de recordatorios:', e);
+  } finally {
+    recordatoriosEnCurso = false;
   }
-
-  if (cambiosPorId.size) {
-    // Se relee el archivo antes de guardar para no pisar reservas que entraron mientras tanto.
-    const actuales = leerTurnos();
-    actuales.forEach(t => { const c = cambiosPorId.get(t.id); if (c) Object.assign(t, c); });
-    guardarTodosLosTurnos(actuales);
-  }
- } catch (e) {
-   console.error('Error general en el cron de recordatorios:', e);
- }
 });
 
 const PORT = process.env.PORT || 3000;
