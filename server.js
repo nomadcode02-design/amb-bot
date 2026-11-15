@@ -146,7 +146,7 @@ function normalizarTexto(t) {
 function esPedidoDeBaja(texto) {
   const t = normalizarTexto(texto);
   if (['baja', 'stop', 'parar', 'no molestar', 'desuscribir'].includes(t)) return true;
-  return /\b(dejar de recibir|no quiero recibir|no quiero mas mensajes|no me (escriban|manden|molesten))\b/.test(t);
+  return /\b(dejar de recibir|no quiero recibir|no quiero mas mensajes|no me (escribas|escriban|mandes|manden|molestes|molesten))\b/.test(t);
 }
 function esPedidoDeAlta(texto) {
   return normalizarTexto(texto) === 'alta';
