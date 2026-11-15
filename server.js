@@ -130,9 +130,13 @@ const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
 
 // Interruptor de emergencia: poné RECORDATORIOS_ACTIVOS=false en Railway y el bot no manda
 // NADA por iniciativa propia (solo contesta cuando el cliente escribe).
-const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS !== 'false';
-// Máximo de intentos de envío por recordatorio (antes se reintentaba cada minuto).
-const MAX_INTENTOS_RECORDATORIO = parseInt(process.env.MAX_INTENTOS_RECORDATORIO || '2', 10);
+const RECORDATORIOS_ACTIVOS = String(process.env.RECORDATORIOS_ACTIVOS ?? 'true').trim().toLowerCase() !== 'false';
+// Máximo de intentos por recordatorio. Si la variable está mal configurada,
+// se usa el valor seguro por defecto; además se limita a 5 para evitar bucles.
+const intentosRecordatorioConfig = Number.parseInt(process.env.MAX_INTENTOS_RECORDATORIO ?? '2', 10);
+const MAX_INTENTOS_RECORDATORIO = Number.isFinite(intentosRecordatorioConfig)
+  ? Math.max(0, Math.min(5, intentosRecordatorioConfig))
+  : 2;
 // Teléfono para hablar con una persona (se muestra en los mensajes automáticos).
 const TELEFONO_CONTACTO_HUMANO = process.env.TELEFONO_CONTACTO || '+54 9 2643 21-2176';
 
