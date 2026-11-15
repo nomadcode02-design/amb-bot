@@ -911,121 +911,106 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
   try {
-    // Avisos de Meta sobre la cuenta (violaciones, calidad, bloqueos).
+    // Meta puede agrupar varias entradas/cambios en una notificación.
+    // Procesamos todos los estados y mensajes, no solo el primero.
     const cambios = (req.body?.entry || []).flatMap(e => e.changes || []);
     for (const c of cambios) {
-      if (CAMPOS_ALERTA_META.includes(c.field)) await procesarAlertaMeta(c.field, c.value);
-    }
-    const primerCambio = req.body?.entry?.[0]?.changes?.[0];
-    if (CAMPOS_ALERTA_META.includes(primerCambio?.field)) return;
+      if (CAMPOS_ALERTA_META.includes(c.field)) {
+        await procesarAlertaMeta(c.field, c.value);
+        continue;
+      }
 
-    const value = primerCambio?.value;
-
-    // Meta manda dos tipos de eventos distintos por este mismo webhook:
-    // "messages" (alguien nos escribió) y "statuses" (avisos de qué pasó
-    // con un mensaje que NOSOTROS mandamos: sent/delivered/read/failed).
-    // Sin procesar "statuses", solo sabíamos que la API había aceptado el
-    // envío — no si realmente llegó al celular del cliente.
-    const statuses = value?.statuses;
-    if (statuses && statuses.length > 0) {
-      for (const s of statuses) {
+      const value = c.value;
+      for (const s of value?.statuses || []) {
         const detalleError = s.errors?.[0]?.title || s.errors?.[0]?.message || null;
         console.log(`📬 Estado de mensaje ${s.id}: ${s.status}${detalleError ? ' - ' + detalleError : ''}`);
         actualizarEstadoRealMensaje(s.id, s.status, detalleError);
       }
-    }
 
-    const mensaje = value?.messages?.[0];
-    if (!mensaje) return;
+      for (const mensaje of value?.messages || []) {
+        if (!mensaje) continue;
+        const numeroCliente = mensaje.from;
+        const texto = mensaje.text?.body || '';
 
-    const numeroCliente = mensaje.from;
-    const texto = mensaje.text?.body || '';
-    // Persistir primero BAJA/ALTA: si el proceso cae justo después, un reintento
-    // de Meta no puede hacer que se pierda el cambio de consentimiento.
-    if (esPedidoDeBaja(texto)) guardarBaja(numeroCliente, true);
-    else if (esPedidoDeAlta(texto)) guardarBaja(numeroCliente, false);
+        // Persistir primero BAJA/ALTA: si el proceso cae justo después, un reintento
+        // de Meta no puede hacer que se pierda el cambio de consentimiento.
+        if (esPedidoDeBaja(texto)) guardarBaja(numeroCliente, true);
+        else if (esPedidoDeAlta(texto)) guardarBaja(numeroCliente, false);
 
-    const registroEntrante = registrarMensajeEntranteUnico(mensaje.id);
-    if (registroEntrante === false) {
-      console.log(`↩️ Evento entrante duplicado ignorado: ${mensaje.id}`);
-      return;
-    }
-    // Si falla el registro de deduplicación, no procesar mensajes normales;
-    // BAJA/ALTA siguen teniendo prioridad para que puedan gestionar su permiso.
-    if (registroEntrante === null && !esPedidoDeBaja(texto) && !esPedidoDeAlta(texto)) return;
-
-    // El cliente nos escribió: se abre la ventana de 24hs en la que Meta
-    // permite mandarle el recordatorio sin plantilla.
-    registrarEntrante(numeroCliente);
-
-    // Marcar como leído ANTES de contestar: esto es lo que hace que Meta
-    // active del todo la conversación con contactos nuevos (ver comentario
-    // en whatsapp-cloud.js). Lo esperamos con await para que el "read"
-    // llegue antes que la respuesta.
-    await marcarComoLeido(mensaje.id);
-
-    console.log(`📩 Mensaje recibido de ${numeroCliente}: "${texto}"`);
-
-    // Pedido de baja: se respeta siempre (política de WhatsApp). Se confirma y no se sigue procesando.
-    if (esPedidoDeBaja(texto)) {
-      guardarBaja(numeroCliente, true);
-      await enviarYRegistrar(numeroCliente,
-        `✅ Listo, no te vamos a mandar más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\n` +
-        `Si querés volver a recibirlos, respondé ALTA. Cualquier duda: ${TELEFONO_CONTACTO_HUMANO}.`, 'webhook');
-      return;
-    }
-    if (esPedidoDeAlta(texto)) {
-      guardarBaja(numeroCliente, false);
-      await enviarYRegistrar(numeroCliente, `👍 Perfecto, volvés a recibir los recordatorios de tus turnos.`, 'webhook');
-      return;
-    }
-
-    // La baja también bloquea confirmaciones y avisos automáticos pendientes.
-    // Solo se reactiva cuando el propio cliente responde ALTA.
-    if (estaDadoDeBaja(numeroCliente)) {
-      console.log(`⏸️ Mensaje automático omitido para ${numeroCliente}: pidió la baja.`);
-      return;
-    }
-
-    const turno = buscarTurnoPorNumero(numeroCliente);
-    let respuesta = null;
-    let turnoConfirmacionPendienteId = null;
-    let hitoPendienteId = null;
-
-    if (turno && !turno.confirmacionEnviada) {
-      // No marcar todavía: primero hay que comprobar que Meta aceptó el envío.
-      turnoConfirmacionPendienteId = turno.id;
-      respuesta = construirMensajeConfirmacion(turno);
-      const avisoAnticipado = textoAvisoAnticipado(numeroCliente, turno.consentimientoFidelidadWhatsapp?.aceptado === true);
-      if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
-    }
-
-    if (FIDELIDAD_TARJETA_ACTIVA) {
-      const turnoConHito = buscarHitoPendiente(numeroCliente);
-      if (turnoConHito) {
-        // El hito queda pendiente hasta que el mensaje que lo contiene
-        // haya sido aceptado por la API de WhatsApp.
-        const yaDicho = ['50', 'gratis'].includes(turnoConHito.hitoFidelidad) && /Este turno/.test(respuesta || '');
-        if (!yaDicho) {
-          const nota = textoHitoFidelidad(turnoConHito.hitoFidelidad);
-          respuesta = respuesta ? `${respuesta}\n\n${nota}` : nota;
+        const registroEntrante = registrarMensajeEntranteUnico(mensaje.id);
+        if (registroEntrante === false) {
+          console.log(`↩️ Evento entrante duplicado ignorado: ${mensaje.id}`);
+          continue;
         }
-        hitoPendienteId = turnoConHito.id;
-      }
-    }
+        // Si falla el registro de deduplicación, no procesar mensajes normales;
+        // BAJA/ALTA siguen teniendo prioridad para que puedan gestionar su permiso.
+        if (registroEntrante === null && !esPedidoDeBaja(texto) && !esPedidoDeAlta(texto)) continue;
 
-    if (respuesta) {
-      const resultadoEnvio = await enviarYRegistrar(numeroCliente, respuesta, 'webhook');
-      if (resultadoEnvio.enviado) {
-        if (turnoConfirmacionPendienteId) {
-          const turnosActuales = leerTurnos();
-          const turnoActual = turnosActuales.find(t => t.id === turnoConfirmacionPendienteId);
-          if (turnoActual && !turnoActual.confirmacionEnviada) {
-            turnoActual.confirmacionEnviada = true;
-            guardarTodosLosTurnos(turnosActuales);
+        // El cliente nos escribió: se abre la ventana de 24hs en la que Meta
+        // permite responder sin plantilla.
+        registrarEntrante(numeroCliente);
+
+        await marcarComoLeido(mensaje.id);
+        console.log(`📩 Mensaje recibido de ${numeroCliente}: "${texto}"`);
+
+        if (esPedidoDeBaja(texto)) {
+          guardarBaja(numeroCliente, true);
+          await enviarYRegistrar(numeroCliente,
+            `✅ Listo, no te vamos a mandar más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\n` +
+            `Si querés volver a recibirlos, respondé ALTA. Cualquier duda: ${TELEFONO_CONTACTO_HUMANO}.`, 'webhook');
+          continue;
+        }
+        if (esPedidoDeAlta(texto)) {
+          guardarBaja(numeroCliente, false);
+          await enviarYRegistrar(numeroCliente, `👍 Perfecto, volvés a recibir los recordatorios de tus turnos.`, 'webhook');
+          continue;
+        }
+
+        // La baja también bloquea confirmaciones y avisos automáticos pendientes.
+        // Solo se reactiva cuando el propio cliente responde ALTA.
+        if (estaDadoDeBaja(numeroCliente)) {
+          console.log(`⏸️ Mensaje automático omitido para ${numeroCliente}: pidió la baja.`);
+          continue;
+        }
+
+        const turno = buscarTurnoPorNumero(numeroCliente);
+        let respuesta = null;
+        let turnoConfirmacionPendienteId = null;
+        let hitoPendienteId = null;
+
+        if (turno && !turno.confirmacionEnviada) {
+          turnoConfirmacionPendienteId = turno.id;
+          respuesta = construirMensajeConfirmacion(turno);
+          const avisoAnticipado = textoAvisoAnticipado(numeroCliente, turno.consentimientoFidelidadWhatsapp?.aceptado === true);
+          if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
+        }
+
+        if (FIDELIDAD_TARJETA_ACTIVA) {
+          const turnoConHito = buscarHitoPendiente(numeroCliente);
+          if (turnoConHito) {
+            const yaDicho = ['50', 'gratis'].includes(turnoConHito.hitoFidelidad) && /Este turno/.test(respuesta || '');
+            if (!yaDicho) {
+              const nota = textoHitoFidelidad(turnoConHito.hitoFidelidad);
+              respuesta = respuesta ? `${respuesta}\n\n${nota}` : nota;
+            }
+            hitoPendienteId = turnoConHito.id;
           }
         }
-        if (hitoPendienteId) marcarHitoAvisado(hitoPendienteId);
+
+        if (respuesta) {
+          const resultadoEnvio = await enviarYRegistrar(numeroCliente, respuesta, 'webhook');
+          if (resultadoEnvio.enviado) {
+            if (turnoConfirmacionPendienteId) {
+              const turnosActuales = leerTurnos();
+              const turnoActual = turnosActuales.find(t => t.id === turnoConfirmacionPendienteId);
+              if (turnoActual && !turnoActual.confirmacionEnviada) {
+                turnoActual.confirmacionEnviada = true;
+                guardarTodosLosTurnos(turnosActuales);
+              }
+            }
+            if (hitoPendienteId) marcarHitoAvisado(hitoPendienteId);
+          }
+        }
       }
     }
   } catch (e) {
