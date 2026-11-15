@@ -473,13 +473,13 @@ function calcularHitoDeCorte(totalCortes) {
 
 function textoHitoFidelidad(hito) {
   if (hito === 'activacion') {
-    return `🎉 ¡Activaste tu *tarjeta de fidelidad*! Cada 10 cortes: 50% off en el 5° y un corte GRATIS en el 10°.`;
+    return `🎉 ¡Activaste tu *tarjeta de fidelidad*! Cada 10 cortes: 50% off en el 5° y un corte GRATIS en el 10°. Dudas: ${TELEFONO_CONTACTO_HUMANO}.`;
   }
   if (hito === '50') {
-    return `🎁 ¡Tu próximo turno tiene *50% de descuento* (en cualquier servicio)! Se lo mostrás al barbero.`;
+    return `🎁 ¡Tu próximo turno tiene *50% de descuento* (en cualquier servicio)! Se lo mostrás al barbero. Dudas: ${TELEFONO_CONTACTO_HUMANO}.`;
   }
   if (hito === 'gratis') {
-    return `🎁 ¡Tu próximo turno es *GRATIS*! Completaste tu tarjeta de fidelidad.`;
+    return `🎁 ¡Tu próximo turno es *GRATIS*! Completaste tu tarjeta de fidelidad. Dudas: ${TELEFONO_CONTACTO_HUMANO}.`;
   }
   return '';
 }
@@ -1086,6 +1086,7 @@ cron.schedule('* * * * *', async () => {
           turno.whatsapp,
           `⏰ ¡Hola ${turno.nombre}! Te recordamos tu turno el ${formatearFecha(turno.dia)} a las ${turno.horario} hs ` +
           `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\n\n` +
+          `Si necesitás cambiarlo o hablar con una persona, escribinos o llamanos al ${TELEFONO_CONTACTO_HUMANO}. ` +
           `Si no querés recibir más recordatorios, respondé BAJA.`,
           'recordatorio'
         );
