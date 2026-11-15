@@ -919,6 +919,13 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // La baja también bloquea confirmaciones y avisos automáticos pendientes.
+    // Solo se reactiva cuando el propio cliente responde ALTA.
+    if (estaDadoDeBaja(numeroCliente)) {
+      console.log(`⏸️ Mensaje automático omitido para ${numeroCliente}: pidió la baja.`);
+      return;
+    }
+
     const turno = buscarTurnoPorNumero(numeroCliente);
     let respuesta = null;
     let turnoConfirmacionPendienteId = null;
@@ -982,6 +989,9 @@ cron.schedule('* * * * *', async () => {
 
   for (const turno of turnos) {
     if (turno.recordatorioEnviado) continue;
+    // No enviar recordatorios de turnos antiguos o importados sin constancia
+    // explícita del consentimiento de WhatsApp.
+    if (turno.consentimientoWhatsapp?.aceptado !== true) continue;
     if ((turno.recordatorioIntentos || 0) >= MAX_INTENTOS_RECORDATORIO) continue;
     if (!correspondeRecordatorio(turno)) continue; // se reservó con más de 24hs de anticipación
 
