@@ -1121,7 +1121,7 @@ cron.schedule('* * * * *', async () => {
         const resultado = await enviarYRegistrar(
           turno.whatsapp,
           `⏰ ¡Hola ${turno.nombre}! Te recordamos tu turno el ${formatearFecha(turno.dia)} a las ${turno.horario} hs ` +
-          `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\\n\\n` +
+          `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\n\n` +
           `Si necesitás cambiarlo o hablar con una persona, escribinos o llamanos al ${TELEFONO_CONTACTO_HUMANO}. ` +
           `Si no querés recibir más recordatorios, respondé BAJA.`,
           'recordatorio'
