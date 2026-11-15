@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const cron = require('node-cron');
 const { sendMessage, armarLinkWhatsApp, limpiarNumero, marcarComoLeido } = require('./whatsapp-cloud');
 // data.js exporta SERVICIOS y BARBEROS como arrays (así los necesita el
@@ -26,7 +27,10 @@ const app = express();
 // Railway está detrás de un proxy: sin esto todas las visitas parecerían la misma IP.
 app.set('trust proxy', 1);
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  // Conservamos el cuerpo original para validar la firma HMAC de Meta.
+  verify: (req, res, buf) => { req.rawBody = Buffer.from(buf); },
+}));
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -867,7 +871,23 @@ app.get('/webhook', (req, res) => {
   res.sendStatus(403);
 });
 
+function verificarFirmaMeta(req) {
+  const appSecret = process.env.META_APP_SECRET;
+  const firma = req.get('x-hub-signature-256') || '';
+  if (!appSecret || !req.rawBody || !/^sha256=[a-f0-9]{64}$/i.test(firma)) return false;
+  const esperada = crypto.createHmac('sha256', appSecret).update(req.rawBody).digest();
+  const recibida = Buffer.from(firma.slice(7), 'hex');
+  return recibida.length === esperada.length && crypto.timingSafeEqual(esperada, recibida);
+}
+
 app.post('/webhook', async (req, res) => {
+  // Sin App Secret configurado o con firma inválida, no confiar en el evento:
+  // podría ser una petición falsificada para abrir ventanas de 24 horas.
+  if (!verificarFirmaMeta(req)) {
+    console.error('⛔ Webhook rechazado: falta META_APP_SECRET o la firma de Meta no es válida.');
+    return res.sendStatus(process.env.META_APP_SECRET ? 401 : 503);
+  }
+
   res.sendStatus(200);
 
   try {
