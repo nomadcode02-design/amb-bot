@@ -940,6 +940,11 @@ app.post('/webhook', async (req, res) => {
 
     const numeroCliente = mensaje.from;
     const texto = mensaje.text?.body || '';
+    // Persistir primero BAJA/ALTA: si el proceso cae justo después, un reintento
+    // de Meta no puede hacer que se pierda el cambio de consentimiento.
+    if (esPedidoDeBaja(texto)) guardarBaja(numeroCliente, true);
+    else if (esPedidoDeAlta(texto)) guardarBaja(numeroCliente, false);
+
     const registroEntrante = registrarMensajeEntranteUnico(mensaje.id);
     if (registroEntrante === false) {
       console.log(`↩️ Evento entrante duplicado ignorado: ${mensaje.id}`);
