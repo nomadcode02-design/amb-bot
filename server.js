@@ -394,7 +394,7 @@ function minutosDeAvisoPara(turno) {
 function correspondeRecordatorio(turno) {
   const horaTurno = fechaHoraDelTurno(turno);
   const anticipacionTotal = (horaTurno - new Date(turno.creado)) / 3600000; // en horas
-  return anticipacionTotal > 0 && anticipacionTotal <= 24;
+  return horaTurno.getTime() > Date.now() && anticipacionTotal > 0 && anticipacionTotal <= 24;
 }
 
 function construirMensajeConfirmacion(turno) {
