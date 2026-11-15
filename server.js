@@ -153,20 +153,28 @@ function esPedidoDeAlta(texto) {
 }
 function estaDadoDeBaja(numero) {
   try {
-    return !!JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'))[limpiarNumero(numero)];
+    const lista = JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'));
+    if (!lista || typeof lista !== 'object' || Array.isArray(lista)) {
+      throw new Error('El archivo de bajas no contiene un objeto válido.');
+    }
+    return !!lista[limpiarNumero(numero)];
   } catch (e) {
-    return false;
+    // Ante cualquier error, fallar cerrado: nunca interpretar un fallo de
+    // lectura como consentimiento para enviar mensajes.
+    console.error('⚠️ No se pudo comprobar la baja; se bloquean los envíos:', e.message);
+    return true;
   }
 }
 function guardarBaja(numero, dada) {
-  try {
-    const lista = JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'));
-    if (dada) lista[limpiarNumero(numero)] = new Date().toISOString();
-    else delete lista[limpiarNumero(numero)];
-    fs.writeFileSync(OPTOUT_FILE, JSON.stringify(lista, null, 2));
-  } catch (e) {
-    console.error('No se pudo guardar la baja:', e.message);
+  const lista = JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'));
+  if (!lista || typeof lista !== 'object' || Array.isArray(lista)) {
+    throw new Error('El archivo de bajas no contiene un objeto válido.');
   }
+  if (dada) lista[limpiarNumero(numero)] = new Date().toISOString();
+  else delete lista[limpiarNumero(numero)];
+  // Si no se puede persistir la baja/alta, propagar el error. No confirmar
+  // al cliente un cambio que en realidad no quedó guardado.
+  fs.writeFileSync(OPTOUT_FILE, JSON.stringify(lista, null, 2));
 }
 
 // ==================== Protección de la cuenta de WhatsApp Business ====================
@@ -913,10 +921,12 @@ app.post('/webhook', async (req, res) => {
 
     const turno = buscarTurnoPorNumero(numeroCliente);
     let respuesta = null;
+    let turnoConfirmacionPendienteId = null;
+    let hitoPendienteId = null;
 
     if (turno && !turno.confirmacionEnviada) {
-      turno.confirmacionEnviada = true;
-      guardarTodosLosTurnos(leerTurnos().map(t => (t.id === turno.id ? turno : t)));
+      // No marcar todavía: primero hay que comprobar que Meta aceptó el envío.
+      turnoConfirmacionPendienteId = turno.id;
       respuesta = construirMensajeConfirmacion(turno);
       const avisoAnticipado = textoAvisoAnticipado(numeroCliente);
       if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
@@ -925,19 +935,30 @@ app.post('/webhook', async (req, res) => {
     if (FIDELIDAD_TARJETA_ACTIVA) {
       const turnoConHito = buscarHitoPendiente(numeroCliente);
       if (turnoConHito) {
-        // Si la confirmación ya dice que ESTE turno usa el premio, no se
-        // repite el mismo aviso; igual se marca como avisado.
+        // El hito queda pendiente hasta que el mensaje que lo contiene
+        // haya sido aceptado por la API de WhatsApp.
         const yaDicho = ['50', 'gratis'].includes(turnoConHito.hitoFidelidad) && /Este turno/.test(respuesta || '');
         if (!yaDicho) {
           const nota = textoHitoFidelidad(turnoConHito.hitoFidelidad);
           respuesta = respuesta ? `${respuesta}\n\n${nota}` : nota;
         }
-        marcarHitoAvisado(turnoConHito.id);
+        hitoPendienteId = turnoConHito.id;
       }
     }
 
     if (respuesta) {
-      await enviarYRegistrar(numeroCliente, respuesta, 'webhook');
+      const resultadoEnvio = await enviarYRegistrar(numeroCliente, respuesta, 'webhook');
+      if (resultadoEnvio.enviado) {
+        if (turnoConfirmacionPendienteId) {
+          const turnosActuales = leerTurnos();
+          const turnoActual = turnosActuales.find(t => t.id === turnoConfirmacionPendienteId);
+          if (turnoActual && !turnoActual.confirmacionEnviada) {
+            turnoActual.confirmacionEnviada = true;
+            guardarTodosLosTurnos(turnosActuales);
+          }
+        }
+        if (hitoPendienteId) marcarHitoAvisado(hitoPendienteId);
+      }
     }
   } catch (e) {
     console.error('❌ Error procesando webhook:', e);
