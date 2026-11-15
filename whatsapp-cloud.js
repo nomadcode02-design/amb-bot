@@ -61,27 +61,29 @@ let ultimoEnvioGlobal = 0;
 const ultimoEnvioPorNumero = {};
 
 function encolarEnvio(numero, fn) {
-  colaEnvios = colaEnvios.then(
-    async () => {
-      const ahora = () => Date.now();
+  const ejecutar = async () => {
+    const ahora = () => Date.now();
 
-      let espera = COOLDOWN_GLOBAL_MS - (ahora() - ultimoEnvioGlobal);
-      if (espera > 0) await new Promise(r => setTimeout(r, espera));
+    let espera = COOLDOWN_GLOBAL_MS - (ahora() - ultimoEnvioGlobal);
+    if (espera > 0) await new Promise(r => setTimeout(r, espera));
 
-      const ultimoAEsteNumero = ultimoEnvioPorNumero[numero] || 0;
-      espera = COOLDOWN_CONTACTO_MS - (ahora() - ultimoAEsteNumero);
-      if (espera > 0) {
-        console.log(`⏳ Cooldown: esperando ${Math.ceil(espera / 1000)}s antes de volver a escribirle a ${numero}`);
-        await new Promise(r => setTimeout(r, espera));
-      }
+    const ultimoAEsteNumero = ultimoEnvioPorNumero[numero] || 0;
+    espera = COOLDOWN_CONTACTO_MS - (ahora() - ultimoAEsteNumero);
+    if (espera > 0) {
+      console.log(`⏳ Cooldown: esperando ${Math.ceil(espera / 1000)}s antes de volver a escribirle a ${numero}`);
+      await new Promise(r => setTimeout(r, espera));
+    }
 
-      ultimoEnvioGlobal = Date.now();
-      ultimoEnvioPorNumero[numero] = Date.now();
-      return fn();
-    },
-    () => fn()
-  );
-  return colaEnvios;
+    ultimoEnvioGlobal = Date.now();
+    ultimoEnvioPorNumero[numero] = Date.now();
+    return fn();
+  };
+
+  // La cola continúa después de un rechazo, pero la promesa de este envío
+  // sigue propagando su error al llamador. Nunca se saltea el cooldown.
+  const intento = colaEnvios.then(ejecutar, ejecutar);
+  colaEnvios = intento.catch(() => {});
+  return intento;
 }
 
 async function enviarTextoReal(numeroDestino, texto) {
