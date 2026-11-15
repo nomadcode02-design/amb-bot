@@ -555,7 +555,7 @@ function buscarTurnoPorNumero(numeroCliente) {
 
 app.post('/api/reservar', async (req, res) => {
   try {
-    const { nombre, whatsapp, barbero, servicio, dia, horario, aceptaWhatsapp, aceptaFidelidadWhatsapp } = req.body;
+    const { nombre, whatsapp, barbero, servicio, dia, horario, aceptaWhatsapp } = req.body;
 
     if (!nombre || !whatsapp || !barbero || !servicio || !dia || !horario) {
       return res.status(400).json({ error: 'Faltan datos de la reserva.' });
@@ -618,7 +618,7 @@ app.post('/api/reservar', async (req, res) => {
         recordatorioEnviado: false,
         completado: false,
         consentimientoWhatsapp: { aceptado: true, fecha: new Date().toISOString() },
-        consentimientoFidelidadWhatsapp: { aceptado: aceptaFidelidadWhatsapp === true, fecha: new Date().toISOString() },
+        consentimientoFidelidadWhatsapp: { aceptado: true, fecha: new Date().toISOString() },
       };
       guardarTurno(turno);
       return { turno };
