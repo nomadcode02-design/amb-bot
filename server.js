@@ -48,7 +48,12 @@ if (!fs.existsSync(BLOQUEOS_FILE)) fs.writeFileSync(BLOQUEOS_FILE, '[]');
 // webhook), queda anotado acá, se haya entregado o no.
 const MENSAJES_FILE = path.join(DATA_DIR, 'mensajes.json');
 if (!fs.existsSync(MENSAJES_FILE)) fs.writeFileSync(MENSAJES_FILE, '[]');
-const MAX_MENSAJES_GUARDADOS = 500; // para que el archivo no crezca sin límite
+// IDs de mensajes entrantes ya procesados: evita responder dos veces si Meta
+// reintenta una notificación que no recibió el acuse correctamente.
+const MENSAJES_RECIBIDOS_FILE = path.join(DATA_DIR, 'mensajes-recibidos.json');
+if (!fs.existsSync(MENSAJES_RECIBIDOS_FILE)) fs.writeFileSync(MENSAJES_RECIBIDOS_FILE, '[]');
+const MAX_MENSAJES_GUARDADOS = 500;
+const MAX_MENSAJES_RECIBIDOS = 2000; // para que el archivo no crezca sin límite
 
 function leerMensajes() {
   return JSON.parse(fs.readFileSync(MENSAJES_FILE, 'utf-8'));
@@ -57,6 +62,21 @@ function guardarMensajes(mensajes) {
   const recortados = mensajes.slice(-MAX_MENSAJES_GUARDADOS);
   fs.writeFileSync(MENSAJES_FILE, JSON.stringify(recortados, null, 2));
 }
+function registrarMensajeEntranteUnico(messageId) {
+  if (!messageId) return null;
+  try {
+    const ids = JSON.parse(fs.readFileSync(MENSAJES_RECIBIDOS_FILE, 'utf-8'));
+    if (!Array.isArray(ids)) throw new Error('El registro de mensajes recibidos no es una lista válida.');
+    if (ids.includes(messageId)) return false;
+    ids.push(messageId);
+    fs.writeFileSync(MENSAJES_RECIBIDOS_FILE, JSON.stringify(ids.slice(-MAX_MENSAJES_RECIBIDOS)));
+    return true;
+  } catch (e) {
+    console.error('⚠️ No se pudo comprobar/guardar el ID entrante:', e.message);
+    return null;
+  }
+}
+
 function registrarMensaje({ numero, texto, tipo, enviado, error, waMessageId }) {
   try {
     const mensajes = leerMensajes();
@@ -918,9 +938,20 @@ app.post('/webhook', async (req, res) => {
     const mensaje = value?.messages?.[0];
     if (!mensaje) return;
 
+    const numeroCliente = mensaje.from;
+    const texto = mensaje.text?.body || '';
+    const registroEntrante = registrarMensajeEntranteUnico(mensaje.id);
+    if (registroEntrante === false) {
+      console.log(`↩️ Evento entrante duplicado ignorado: ${mensaje.id}`);
+      return;
+    }
+    // Si falla el registro de deduplicación, no procesar mensajes normales;
+    // BAJA/ALTA siguen teniendo prioridad para que puedan gestionar su permiso.
+    if (registroEntrante === null && !esPedidoDeBaja(texto) && !esPedidoDeAlta(texto)) return;
+
     // El cliente nos escribió: se abre la ventana de 24hs en la que Meta
     // permite mandarle el recordatorio sin plantilla.
-    registrarEntrante(mensaje.from);
+    registrarEntrante(numeroCliente);
 
     // Marcar como leído ANTES de contestar: esto es lo que hace que Meta
     // active del todo la conversación con contactos nuevos (ver comentario
@@ -928,8 +959,6 @@ app.post('/webhook', async (req, res) => {
     // llegue antes que la respuesta.
     await marcarComoLeido(mensaje.id);
 
-    const numeroCliente = mensaje.from;
-    const texto = mensaje.text?.body || '';
     console.log(`📩 Mensaje recibido de ${numeroCliente}: "${texto}"`);
 
     // Pedido de baja: se respeta siempre (política de WhatsApp). Se confirma y no se sigue procesando.
