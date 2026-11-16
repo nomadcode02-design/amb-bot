@@ -130,7 +130,7 @@ const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
 
 // Interruptor de emergencia: poné RECORDATORIOS_ACTIVOS=false en Railway y el bot no manda
 // NADA por iniciativa propia (solo contesta cuando el cliente escribe).
-const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS !== 'false';
+const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS === 'true';
 // Máximo de intentos de envío por recordatorio (antes se reintentaba cada minuto).
 const MAX_INTENTOS_RECORDATORIO = parseInt(process.env.MAX_INTENTOS_RECORDATORIO || '2', 10);
 // Teléfono para hablar con una persona (se muestra en los mensajes automáticos).
@@ -153,19 +153,37 @@ function esPedidoDeAlta(texto) {
 }
 function estaDadoDeBaja(numero) {
   try {
-    return !!JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'))[limpiarNumero(numero)];
+    const lista = JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'));
+    if (!lista || typeof lista !== 'object' || Array.isArray(lista)) {
+      throw new Error('Formato de optout.json inválido');
+    }
+    return !!lista[limpiarNumero(numero)];
   } catch (e) {
-    return false;
+    // Criterio seguro: si no podemos comprobar el estado de baja,
+    // no enviamos recordatorios hasta recuperar el archivo.
+    console.error('No se pudo comprobar optout.json; se bloquean recordatorios:', e.message);
+    return true;
   }
 }
 function guardarBaja(numero, dada) {
   try {
     const lista = JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'));
-    if (dada) lista[limpiarNumero(numero)] = new Date().toISOString();
-    else delete lista[limpiarNumero(numero)];
-    fs.writeFileSync(OPTOUT_FILE, JSON.stringify(lista, null, 2));
+    if (!lista || typeof lista !== 'object' || Array.isArray(lista)) {
+      throw new Error('Formato de optout.json inválido');
+    }
+    const numeroNormalizado = limpiarNumero(numero);
+    if (!numeroNormalizado) throw new Error('Número inválido para registrar la preferencia');
+    if (dada) lista[numeroNormalizado] = new Date().toISOString();
+    else delete lista[numeroNormalizado];
+
+    // Escritura temporal + rename para reducir el riesgo de dejar el JSON truncado.
+    const temporal = `${OPTOUT_FILE}.tmp`;
+    fs.writeFileSync(temporal, JSON.stringify(lista, null, 2));
+    fs.renameSync(temporal, OPTOUT_FILE);
+    return true;
   } catch (e) {
-    console.error('No se pudo guardar la baja:', e.message);
+    console.error('No se pudo guardar la preferencia de WhatsApp:', e.message);
+    return false;
   }
 }
 
@@ -899,15 +917,19 @@ app.post('/webhook', async (req, res) => {
 
     // Pedido de baja: se respeta siempre (política de WhatsApp). Se confirma y no se sigue procesando.
     if (esPedidoDeBaja(texto)) {
-      guardarBaja(numeroCliente, true);
-      await enviarYRegistrar(numeroCliente,
-        `✅ Listo, no te vamos a mandar más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\n` +
-        `Si querés volver a recibirlos, respondé ALTA. Cualquier duda: ${TELEFONO_CONTACTO_HUMANO}.`, 'webhook');
+      const guardada = guardarBaja(numeroCliente, true);
+      const confirmacion = guardada
+        ? `✅ Listo, registramos tu baja. No te enviaremos más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\nSi querés volver a recibirlos, respondé ALTA. Cualquier duda: ${TELEFONO_CONTACTO_HUMANO}.`
+        : `⚠️ Recibimos tu pedido de baja, pero tuvimos un problema técnico al guardarlo. Por seguridad, los recordatorios quedan bloqueados mientras lo resolvemos. Si necesitás ayuda, contactá con ${TELEFONO_CONTACTO_HUMANO}.`;
+      await enviarYRegistrar(numeroCliente, confirmacion, 'webhook');
       return;
     }
     if (esPedidoDeAlta(texto)) {
-      guardarBaja(numeroCliente, false);
-      await enviarYRegistrar(numeroCliente, `👍 Perfecto, volvés a recibir los recordatorios de tus turnos.`, 'webhook');
+      const guardada = guardarBaja(numeroCliente, false);
+      const confirmacion = guardada
+        ? `👍 Perfecto, registramos tu autorización para volver a recibir los recordatorios de tus turnos.`
+        : `⚠️ No pudimos actualizar tu preferencia por un problema técnico. Por seguridad, los recordatorios siguen desactivados.`;
+      await enviarYRegistrar(numeroCliente, confirmacion, 'webhook');
       return;
     }
 
