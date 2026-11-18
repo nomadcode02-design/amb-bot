@@ -455,7 +455,7 @@ function construirMensajeConfirmacion(turno) {
     `💰 Precio: ${turno.precio}\n\n` +
     `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
     `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.\n\n` +
-    `\n\n` +
+    `¿Necesitás hablar con una persona? Escribí HUMANO o llamanos al ${TELEFONO_CONTACTO_HUMANO}.\n\n` +
     `¡Nos vemos pronto!`
   );
 }
@@ -1158,7 +1158,7 @@ cron.schedule('* * * * *', async () => {
           turno.whatsapp,
           `⏰ ¡Hola ${turno.nombre}! Te recordamos tu turno el ${formatearFecha(turno.dia)} a las ${turno.horario} hs ` +
           `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\n\n` +
-          `Si no querés recibir más recordatorios, respondé BAJA.`,
+          `Si no querés recibir más recordatorios, respondé BAJA. Para hablar con una persona, escribí HUMANO.`,
           'recordatorio'
         );
         if (resultado.enviado) {
