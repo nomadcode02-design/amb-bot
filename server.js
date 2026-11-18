@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const crypto = require('crypto');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
@@ -26,7 +27,10 @@ const app = express();
 // Railway está detrás de un proxy: sin esto todas las visitas parecerían la misma IP.
 app.set('trust proxy', 1);
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  limit: '32kb',
+  verify: (req, res, buffer) => { req.rawBody = Buffer.from(buffer); }
+}));
 
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -172,7 +176,7 @@ async function enviarYRegistrar(numero, texto, tipo) {
 }
 
 const OWNER_WHATSAPP = process.env.OWNER_WHATSAPP;
-const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
+const PANEL_KEY = process.env.PANEL_KEY;
 
 // ==================== Cumplimiento de las políticas de WhatsApp ====================
 // Política de mensajería de WhatsApp Business (resumen de lo que acá se cumple):
@@ -184,8 +188,8 @@ const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
 
 // Interruptor de emergencia: poné RECORDATORIOS_ACTIVOS=false en Railway y el bot no manda
 // NADA por iniciativa propia (solo contesta cuando el cliente escribe).
-const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS !== 'false';
-const WHATSAPP_ENVIOS_ACTIVOS = process.env.WHATSAPP_ENVIOS_ACTIVOS !== 'false';
+const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS === 'true';
+const WHATSAPP_ENVIOS_ACTIVOS = process.env.WHATSAPP_ENVIOS_ACTIVOS === 'true';
 // Máximo de intentos de envío por recordatorio (antes se reintentaba cada minuto).
 const MAX_INTENTOS_RECORDATORIO = 1;
 // Teléfono para hablar con una persona (se muestra en los mensajes automáticos).
@@ -229,7 +233,9 @@ function estaDadoDeBaja(numero) {
   try {
     return !!JSON.parse(fs.readFileSync(OPTOUT_FILE, 'utf-8'))[limpiarNumero(numero)];
   } catch (e) {
-    return false;
+    // Si el registro de bajas no se puede leer, bloqueamos los envíos por seguridad.
+    console.error('No se pudo leer la lista de bajas; se bloquean los envíos:', e.message);
+    return true;
   }
 }
 function guardarBaja(numero, dada) {
@@ -238,8 +244,10 @@ function guardarBaja(numero, dada) {
     if (dada) lista[limpiarNumero(numero)] = new Date().toISOString();
     else delete lista[limpiarNumero(numero)];
     fs.writeFileSync(OPTOUT_FILE, JSON.stringify(lista, null, 2));
+    return true;
   } catch (e) {
-    console.error('No se pudo guardar la baja:', e.message);
+    console.error('No se pudo guardar la baja; no se enviará ninguna otra respuesta:', e.message);
+    return false;
   }
 }
 
@@ -596,8 +604,8 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(429).json({ error: 'Hiciste muchas reservas seguidas. Probá de nuevo en un rato o escribinos por WhatsApp.' });
     }
 
-    // El consentimiento para recibir mensajes es opcional. Reservar por la web
-    // no autoriza mensajes de WhatsApp; solo se registra si el cliente lo aceptó.
+    // La reserva web no depende del consentimiento para WhatsApp. El consentimiento
+    // es opcional y solo habilita mensajes sobre el turno si el cliente lo aceptó.
     const digitos = String(whatsapp).replace(/\D/g, '');
     if (digitos.length < 8 || digitos.length > 15) {
       return res.status(400).json({ error: 'El número de WhatsApp no parece válido. Revisalo, por favor.' });
@@ -637,6 +645,7 @@ app.post('/api/reservar', async (req, res) => {
         return { error: 'Ese horario no está disponible. Elegí otro.' };
       }
 
+      const aceptaMensajes = aceptaWhatsapp === true;
       const turno = {
         id: Date.now().toString(),
         nombre, whatsapp, barbero: barberoNombre,
@@ -645,7 +654,7 @@ app.post('/api/reservar', async (req, res) => {
         creado: new Date().toISOString(),
         recordatorioEnviado: false,
         completado: false,
-        consentimientoWhatsapp: { aceptado: aceptaWhatsapp === true, fecha: aceptaWhatsapp === true ? new Date().toISOString() : null },
+        consentimientoWhatsapp: { aceptado: aceptaMensajes, fecha: aceptaMensajes ? new Date().toISOString() : null },
       };
       guardarTurno(turno);
       return { turno };
@@ -769,7 +778,7 @@ app.get('/api/ocupados', (req, res) => {
 });
 
 app.get('/api/turnos', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -917,13 +926,23 @@ app.delete('/api/turnos/:id', (req, res) => {
   }
 });
 
-const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'cambiar-este-token';
+const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN;
+const META_APP_SECRET = process.env.META_APP_SECRET;
+
+function firmaWebhookValida(req) {
+  const firma = req.get('x-hub-signature-256') || '';
+  if (!META_APP_SECRET || !req.rawBody || !/^sha256=[a-f0-9]{64}$/i.test(firma)) return false;
+  const esperada = 'sha256=' + crypto.createHmac('sha256', META_APP_SECRET).update(req.rawBody).digest('hex');
+  const recibidaBuffer = Buffer.from(firma, 'utf8');
+  const esperadaBuffer = Buffer.from(esperada, 'utf8');
+  return recibidaBuffer.length === esperadaBuffer.length && crypto.timingSafeEqual(recibidaBuffer, esperadaBuffer);
+}
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === WEBHOOK_VERIFY_TOKEN) {
+  if (WEBHOOK_VERIFY_TOKEN && mode === 'subscribe' && token === WEBHOOK_VERIFY_TOKEN) {
     console.log('✅ Webhook verificado por Meta.');
     return res.status(200).send(challenge);
   }
@@ -932,6 +951,14 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
+  if (!META_APP_SECRET) {
+    console.error('Webhook rechazado: falta configurar META_APP_SECRET.');
+    return res.sendStatus(503);
+  }
+  if (!firmaWebhookValida(req)) {
+    console.warn('Webhook rechazado: firma X-Hub-Signature-256 inválida.');
+    return res.sendStatus(401);
+  }
   res.sendStatus(200);
 
   try {
@@ -992,14 +1019,14 @@ app.post('/webhook', async (req, res) => {
 
     // Pedido de baja: se respeta siempre (política de WhatsApp). Se confirma y no se sigue procesando.
     if (esPedidoDeBaja(texto)) {
-      guardarBaja(numeroCliente, true);
+      if (!guardarBaja(numeroCliente, true)) return;
       await enviarYRegistrar(numeroCliente,
         `✅ Listo, no te vamos a mandar más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\n` +
         `Si querés volver a recibirlos, respondé ALTA. Cualquier duda: ${TELEFONO_CONTACTO_HUMANO}.`, 'webhook');
       return;
     }
     if (esPedidoDeAlta(texto)) {
-      guardarBaja(numeroCliente, false);
+      if (!guardarBaja(numeroCliente, false)) return;
       await enviarYRegistrar(numeroCliente, `👍 Perfecto, volvés a recibir los recordatorios de tus turnos.`, 'webhook');
       return;
     }
@@ -1014,7 +1041,7 @@ app.post('/webhook', async (req, res) => {
     const turno = buscarTurnoPorNumero(numeroCliente);
     let respuesta = null;
 
-    if (turno && !turno.confirmacionEnviada) {
+    if (turno && !turno.confirmacionEnviada && turno.consentimientoWhatsapp?.aceptado === true) {
       respuesta = construirMensajeConfirmacion(turno);
       const avisoAnticipado = textoAvisoAnticipado(numeroCliente);
       if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
@@ -1072,6 +1099,7 @@ cron.schedule('* * * * *', async () => {
 
   for (const turno of turnos) {
     if (turno.recordatorioEnviado) continue;
+    if (turno.consentimientoWhatsapp?.aceptado !== true) continue;
     if ((turno.recordatorioIntentos || 0) >= MAX_INTENTOS_RECORDATORIO) continue;
     if (!correspondeRecordatorio(turno)) continue; // se reservó con más de 24hs de anticipación
 
