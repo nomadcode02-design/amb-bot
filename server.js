@@ -1020,15 +1020,18 @@ app.post('/webhook', async (req, res) => {
       if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
     }
 
-    if (FIDELIDAD_TARJETA_ACTIVA) {
+    // Los hitos de fidelidad solo se comunican dentro de una confirmación
+    // de turno nuevo; nunca se envía un mensaje independiente por activar
+    // la tarjeta o alcanzar un premio.
+    if (FIDELIDAD_TARJETA_ACTIVA && respuesta) {
       const turnoConHito = buscarHitoPendiente(numeroCliente);
       if (turnoConHito) {
         // Si la confirmación ya dice que ESTE turno usa el premio, no se
         // repite el mismo aviso; igual se marca como avisado.
-        const yaDicho = ['50', 'gratis'].includes(turnoConHito.hitoFidelidad) && /Este turno/.test(respuesta || '');
+        const yaDicho = ['50', 'gratis'].includes(turnoConHito.hitoFidelidad) && /Este turno/.test(respuesta);
         if (!yaDicho) {
           const nota = textoHitoFidelidad(turnoConHito.hitoFidelidad);
-          respuesta = respuesta ? `${respuesta}\n\n${nota}` : nota;
+          respuesta = `${respuesta}\n\n${nota}`;
         }
         marcarHitoAvisado(turnoConHito.id);
       }
