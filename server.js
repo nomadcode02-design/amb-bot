@@ -784,7 +784,7 @@ app.post('/api/optout', (req, res) => {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   const whatsapp = String(req.body?.whatsapp || '').trim();
-  const digitos = whatsapp.replace(/\\D/g, '');
+  const digitos = whatsapp.replace(/\D/g, '');
   if (digitos.length < 8 || digitos.length > 15) {
     return res.status(400).json({ error: 'Ingresá un número de WhatsApp válido.' });
   }
