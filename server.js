@@ -103,6 +103,18 @@ function actualizarEstadoRealMensaje(waMessageId, estado, errorDetalle) {
 // olvidarse en ningún lugar donde se manda algo.
 const ENVIO_PAUSADO_FILE = path.join(DATA_DIR, 'whatsapp-envio-pausado.json');
 
+// Reanudación manual de un solo uso: elimina el bloqueo persistido únicamente
+// cuando el operador confirma que Meta ya restableció la cuenta. Después se
+// desactiva la variable para que cualquier nuevo bloqueo vuelva a frenar envíos.
+if (process.env.WHATSAPP_REANUDAR_MANUAL === 'true') {
+  try {
+    if (fs.existsSync(ENVIO_PAUSADO_FILE)) fs.unlinkSync(ENVIO_PAUSADO_FILE);
+    console.log('✅ Reanudación manual autorizada: se limpió el bloqueo persistido de WhatsApp.');
+  } catch (e) {
+    console.error('🚨 No se pudo limpiar el bloqueo persistido de WhatsApp:', e.message);
+  }
+}
+
 function estaPausadoWhatsApp() {
   try {
     return JSON.parse(fs.readFileSync(ENVIO_PAUSADO_FILE, 'utf-8')).pausado === true;
