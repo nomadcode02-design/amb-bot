@@ -1,6 +1,6 @@
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_ID;
-const GRAPH_VERSION = 'v21.0';
+const GRAPH_VERSION = process.env.WHATSAPP_GRAPH_VERSION || 'v26.0';
 const GRAPH_URL = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
 
 if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
