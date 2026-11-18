@@ -101,7 +101,34 @@ function actualizarEstadoRealMensaje(waMessageId, estado, errorDetalle) {
 // Envoltorio de sendMessage: todo el resto del archivo llama a ESTA función
 // en vez de sendMessage directo, así queda registrado siempre, sin
 // olvidarse en ningún lugar donde se manda algo.
+const ENVIO_PAUSADO_FILE = path.join(DATA_DIR, 'whatsapp-envio-pausado.json');
+
+function estaPausadoWhatsApp() {
+  try {
+    return JSON.parse(fs.readFileSync(ENVIO_PAUSADO_FILE, 'utf-8')).pausado === true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function pausarEnviosWhatsApp(motivo) {
+  try {
+    fs.writeFileSync(ENVIO_PAUSADO_FILE, JSON.stringify({
+      pausado: true,
+      fecha: new Date().toISOString(),
+      motivo: motivo || 'Meta devolvió Business Account locked (131031)'
+    }, null, 2));
+  } catch (e) {
+    console.error('🚨 No se pudo persistir la pausa de WhatsApp:', e.message);
+  }
+  console.error('🛑 ENVÍOS DE WHATSAPP PAUSADOS POR SEGURIDAD. Revisar Meta Business Support Home antes de reanudar.');
+}
+
 async function enviarYRegistrar(numero, texto, tipo) {
+  if (estaPausadoWhatsApp()) {
+    registrarMensaje({ numero, texto, tipo, enviado: false, error: 'Envíos pausados por bloqueo de seguridad de WhatsApp.' });
+    return { enviado: false, pausado: true };
+  }
   try {
     const resultado = await sendMessage(numero, texto);
     registrarMensaje({
@@ -112,6 +139,9 @@ async function enviarYRegistrar(numero, texto, tipo) {
     });
     return resultado;
   } catch (e) {
+    if (Number(e.code) === 131031) {
+      pausarEnviosWhatsApp('Meta devolvió el error 131031: Business Account locked');
+    }
     registrarMensaje({ numero, texto, tipo, enviado: false, error: e.message });
     throw e;
   }
@@ -132,7 +162,7 @@ const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
 // NADA por iniciativa propia (solo contesta cuando el cliente escribe).
 const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS !== 'false';
 // Máximo de intentos de envío por recordatorio (antes se reintentaba cada minuto).
-const MAX_INTENTOS_RECORDATORIO = parseInt(process.env.MAX_INTENTOS_RECORDATORIO || '2', 10);
+const MAX_INTENTOS_RECORDATORIO = 1;
 // Teléfono para hablar con una persona (se muestra en los mensajes automáticos).
 const TELEFONO_CONTACTO_HUMANO = process.env.TELEFONO_CONTACTO || '+54 9 2643 21-2176';
 
