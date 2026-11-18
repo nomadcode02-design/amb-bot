@@ -790,7 +790,7 @@ app.get('/api/turnos', (req, res) => {
 });
 
 app.get('/api/mensajes', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -804,7 +804,7 @@ app.get('/api/mensajes', (req, res) => {
 });
 
 app.get('/api/alertas-meta', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -815,7 +815,7 @@ app.get('/api/alertas-meta', (req, res) => {
 });
 
 app.get('/api/bloqueos', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -827,7 +827,7 @@ app.get('/api/bloqueos', (req, res) => {
 });
 
 app.post('/api/bloqueos', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -859,7 +859,7 @@ app.post('/api/bloqueos', (req, res) => {
 });
 
 app.delete('/api/bloqueos/:grupoId', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -877,7 +877,7 @@ app.delete('/api/bloqueos/:grupoId', (req, res) => {
 });
 
 app.patch('/api/turnos/:id/completar', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
@@ -909,7 +909,7 @@ app.patch('/api/turnos/:id/completar', (req, res) => {
 });
 
 app.delete('/api/turnos/:id', (req, res) => {
-  if (req.query.key !== PANEL_KEY) {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
   }
   try {
