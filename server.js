@@ -125,6 +125,10 @@ function pausarEnviosWhatsApp(motivo) {
 }
 
 async function enviarYRegistrar(numero, texto, tipo) {
+  if (!WHATSAPP_ENVIOS_ACTIVOS) {
+    registrarMensaje({ numero, texto, tipo, enviado: false, error: 'Envíos de WhatsApp pausados temporalmente; reservar desde la página web.' });
+    return { enviado: false, pausado: true };
+  }
   if (estaPausadoWhatsApp()) {
     registrarMensaje({ numero, texto, tipo, enviado: false, error: 'Envíos pausados por bloqueo de seguridad de WhatsApp.' });
     return { enviado: false, pausado: true };
@@ -169,6 +173,7 @@ const PANEL_KEY = process.env.PANEL_KEY || 'cambiar-esta-clave';
 // Interruptor de emergencia: poné RECORDATORIOS_ACTIVOS=false en Railway y el bot no manda
 // NADA por iniciativa propia (solo contesta cuando el cliente escribe).
 const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS !== 'false';
+const WHATSAPP_ENVIOS_ACTIVOS = process.env.WHATSAPP_ENVIOS_ACTIVOS !== 'false';
 // Máximo de intentos de envío por recordatorio (antes se reintentaba cada minuto).
 const MAX_INTENTOS_RECORDATORIO = 1;
 // Teléfono para hablar con una persona (se muestra en los mensajes automáticos).
