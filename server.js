@@ -223,8 +223,13 @@ function normalizarTexto(t) {
 }
 function esPedidoDeBaja(texto) {
   const t = normalizarTexto(texto);
-  if (['baja', 'stop', 'parar', 'cancelar', 'cancel', 'unsubscribe', 'desuscribir', 'no molestar', 'salir', 'quit'].includes(t)) return true;
-  return /\b(dejar de recibir|dejen de enviarme|no quiero recibir|no quiero mas mensajes|no me (escribas|escriban|mandes|manden|molestes|molesten|contactes|contacten))\b/.test(t);
+  if (['baja', 'stop', 'parar', 'unsubscribe', 'desuscribir', 'no molestar', 'no me escriban mas'].includes(t)) return true;
+  return /\b(dejar de recibir|dejen de enviarme|no quiero recibir|no quiero mas mensajes|no me (escribas|escriban|mandes|manden|molestes|molesten|contactes|contacten)|cancelar (los )?(mensajes|recordatorios)|no enviar (mas )?(mensajes|recordatorios))\b/.test(t);
+}
+function esPedidoDeAyudaHumana(texto) {
+  const t = normalizarTexto(texto);
+  return ['humano', 'persona', 'asesor', 'operador', 'ayuda', 'hablar con alguien', 'atencion humana'].includes(t) ||
+    /\b(hablar con (una )?persona|quiero un (asesor|operador)|necesito (ayuda|hablar con alguien))\b/.test(t);
 }
 function esPedidoDeAlta(texto) {
   return normalizarTexto(texto) === 'alta';
@@ -1052,6 +1057,14 @@ app.post('/webhook', async (req, res) => {
     // por el mero hecho de que vuelva a escribir. Solo "ALTA" reactiva.
     if (estaDadoDeBaja(numeroCliente)) {
       console.log('⏸️ Respuesta automática omitida: el contacto está dado de baja.');
+      return;
+    }
+
+    // Escalamiento claro a una persona: ofrece teléfono y atención presencial.
+    if (esPedidoDeAyudaHumana(texto)) {
+      await enviarYRegistrar(numeroCliente,
+        `👤 Para hablar con una persona de AMB BARBERS, llamanos al ${TELEFONO_CONTACTO_HUMANO}. También podés acercarte al local en Santa Rosa, 25 de Mayo, San Juan. Si preferís, contanos tu consulta por acá y la revisamos cuando el equipo esté disponible.`,
+        'webhook');
       return;
     }
 
