@@ -129,6 +129,14 @@ async function enviarYRegistrar(numero, texto, tipo) {
     registrarMensaje({ numero, texto, tipo, enviado: false, error: 'Envíos pausados por bloqueo de seguridad de WhatsApp.' });
     return { enviado: false, pausado: true };
   }
+  // Defensa central: ningún mensaje de texto libre sale si no hay una
+  // ventana de atención abierta. Las plantillas aprobadas requieren un
+  // flujo separado y explícito; nunca se improvisan desde este envío.
+  if (!ventanaAbierta(numero)) {
+    registrarMensaje({ numero, texto, tipo, enviado: false, error: 'Bloqueado por seguridad: ventana de atención de WhatsApp cerrada.' });
+    console.warn('⏸️ Envío bloqueado: ventana de atención cerrada.');
+    return { enviado: false, bloqueadoPorVentana: true };
+  }
   try {
     const resultado = await sendMessage(numero, texto);
     registrarMensaje({
@@ -168,6 +176,25 @@ const TELEFONO_CONTACTO_HUMANO = process.env.TELEFONO_CONTACTO || '+54 9 2643 21
 
 const OPTOUT_FILE = path.join(DATA_DIR, 'optout.json');
 if (!fs.existsSync(OPTOUT_FILE)) fs.writeFileSync(OPTOUT_FILE, '{}');
+
+// Idempotencia de webhooks: Meta puede reintentar una notificación. No
+// procesamos dos veces el mismo mensaje entrante ni repetimos respuestas.
+const ENTRANTES_FILE = path.join(DATA_DIR, 'mensajes-entrantes-procesados.json');
+if (!fs.existsSync(ENTRANTES_FILE)) fs.writeFileSync(ENTRANTES_FILE, '[]');
+function registrarEntranteUnico(messageId) {
+  if (!messageId) return false;
+  try {
+    const ids = JSON.parse(fs.readFileSync(ENTRANTES_FILE, 'utf-8'));
+    if (ids.includes(messageId)) return false;
+    ids.push(messageId);
+    fs.writeFileSync(ENTRANTES_FILE, JSON.stringify(ids.slice(-1000)));
+    return true;
+  } catch (e) {
+    // Ante un error de persistencia, fallamos cerrado para evitar respuestas duplicadas.
+    console.error('No se pudo verificar la idempotencia del webhook:', e.message);
+    return false;
+  }
+}
 
 function normalizarTexto(t) {
   return String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -912,6 +939,10 @@ app.post('/webhook', async (req, res) => {
 
     const mensaje = value?.messages?.[0];
     if (!mensaje) return;
+    if (!registrarEntranteUnico(mensaje.id)) {
+      console.log('⏭️ Webhook repetido o sin ID: no se vuelve a procesar.');
+      return;
+    }
 
     // El cliente nos escribió: se abre la ventana de 24hs en la que Meta
     // permite mandarle el recordatorio sin plantilla.
@@ -941,12 +972,17 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // Si pidió la baja, no se envían confirmaciones ni avisos de fidelidad
+    // por el mero hecho de que vuelva a escribir. Solo "ALTA" reactiva.
+    if (estaDadoDeBaja(numeroCliente)) {
+      console.log('⏸️ Respuesta automática omitida: el contacto está dado de baja.');
+      return;
+    }
+
     const turno = buscarTurnoPorNumero(numeroCliente);
     let respuesta = null;
 
     if (turno && !turno.confirmacionEnviada) {
-      turno.confirmacionEnviada = true;
-      guardarTodosLosTurnos(leerTurnos().map(t => (t.id === turno.id ? turno : t)));
       respuesta = construirMensajeConfirmacion(turno);
       const avisoAnticipado = textoAvisoAnticipado(numeroCliente);
       if (avisoAnticipado) respuesta = `${respuesta}\n\n${avisoAnticipado}`;
@@ -967,7 +1003,17 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (respuesta) {
-      await enviarYRegistrar(numeroCliente, respuesta, 'webhook');
+      const resultadoEnvio = await enviarYRegistrar(numeroCliente, respuesta, 'webhook');
+      // No marcamos la confirmación como enviada si el mensaje fue bloqueado
+      // por seguridad o rechazado: así el turno no queda falsamente confirmado.
+      if (resultadoEnvio.enviado && turno && !turno.confirmacionEnviada) {
+        const turnosActuales = leerTurnos();
+        const turnoActual = turnosActuales.find(t => t.id === turno.id);
+        if (turnoActual) {
+          turnoActual.confirmacionEnviada = true;
+          guardarTodosLosTurnos(turnosActuales);
+        }
+      }
     }
   } catch (e) {
     console.error('❌ Error procesando webhook:', e);
