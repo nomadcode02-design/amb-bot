@@ -442,7 +442,7 @@ function construirMensajeConfirmacion(turno) {
     `💰 Precio: ${turno.precio}\n\n` +
     `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
     `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.\n\n` +
-    `¿Dudas o cambios? Respondé este mensaje y te ayudamos.\n\n` +
+    `\n\n` +
     `¡Nos vemos pronto!`
   );
 }
