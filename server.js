@@ -320,6 +320,14 @@ function resumirAlertaMeta(v = {}) {
 async function procesarAlertaMeta(campo, value) {
   const resumen = resumirAlertaMeta(value);
   console.log(`🚨 Alerta de Meta (${campo}): ${resumen}`);
+
+  // Si Meta informa una desactivación, se detienen los envíos inmediatamente.
+  // Un REINSTATE no reactiva automáticamente: primero se revisa el motivo en Meta.
+  const evento = String(value?.event || '').toUpperCase();
+  const estadoCuenta = String(value?.ban_info?.waba_ban_state || value?.state || '').toUpperCase();
+  if (evento === 'DISABLED_UPDATE' && estadoCuenta === 'DISABLE') {
+    pausarEnviosWhatsApp('Meta notificó DISABLED_UPDATE · DISABLE. Revisión manual obligatoria antes de reanudar.');
+  }
   try {
     const alertas = JSON.parse(fs.readFileSync(ALERTAS_META_FILE, 'utf-8'));
     alertas.push({ fecha: new Date().toISOString(), campo, resumen, detalle: value });
@@ -931,8 +939,18 @@ app.post('/webhook', async (req, res) => {
     const statuses = value?.statuses;
     if (statuses && statuses.length > 0) {
       for (const s of statuses) {
-        const detalleError = s.errors?.[0]?.title || s.errors?.[0]?.message || null;
+        const errorMeta = s.errors?.[0] || null;
+        const detalleError = errorMeta?.title || errorMeta?.message || null;
         console.log(`📬 Estado de mensaje ${s.id}: ${s.status}${detalleError ? ' - ' + detalleError : ''}`);
+        // Meta a veces acepta el POST y recién después informa "Business
+        // Account locked" en el webhook de estado. Ese caso también debe
+        // activar el freno persistente; mirar solo el error HTTP era insuficiente.
+        if (s.status === 'failed' && (
+          Number(errorMeta?.code) === 131031 ||
+          /business account locked/i.test(String(detalleError || ''))
+        )) {
+          pausarEnviosWhatsApp('Meta informó Business Account locked (131031) en el estado del mensaje.');
+        }
         actualizarEstadoRealMensaje(s.id, s.status, detalleError);
       }
     }
