@@ -777,6 +777,23 @@ app.get('/api/ocupados', (req, res) => {
   }
 });
 
+// Permite al equipo registrar una solicitud de baja recibida fuera de WhatsApp
+// (por teléfono, Instagram o en el local). La lista se conserva para evitar contactos futuros.
+app.post('/api/optout', (req, res) => {
+  if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
+    return res.status(401).json({ error: 'No autorizado.' });
+  }
+  const whatsapp = String(req.body?.whatsapp || '').trim();
+  const digitos = whatsapp.replace(/\\D/g, '');
+  if (digitos.length < 8 || digitos.length > 15) {
+    return res.status(400).json({ error: 'Ingresá un número de WhatsApp válido.' });
+  }
+  if (!guardarBaja(whatsapp, true)) {
+    return res.status(500).json({ error: 'No se pudo registrar la baja. No se modificó el estado.' });
+  }
+  return res.json({ ok: true });
+});
+
 app.get('/api/turnos', (req, res) => {
   if (!PANEL_KEY || req.get('x-panel-key') !== PANEL_KEY) {
     return res.status(401).json({ error: 'No autorizado.' });
