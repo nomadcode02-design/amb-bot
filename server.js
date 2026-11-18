@@ -584,11 +584,8 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(429).json({ error: 'Hiciste muchas reservas seguidas. Probá de nuevo en un rato o escribinos por WhatsApp.' });
     }
 
-    // Consentimiento: hay que confirmar que el número es propio y aceptar
-    // recibir mensajes. Queda guardado en el turno como constancia.
-    if (aceptaWhatsapp !== true) {
-      return res.status(400).json({ error: 'Para reservar tenés que confirmar que el número es tuyo y aceptar recibir mensajes por WhatsApp.' });
-    }
+    // El consentimiento para recibir mensajes es opcional. Reservar por la web
+    // no autoriza mensajes de WhatsApp; solo se registra si el cliente lo aceptó.
     const digitos = String(whatsapp).replace(/\D/g, '');
     if (digitos.length < 8 || digitos.length > 15) {
       return res.status(400).json({ error: 'El número de WhatsApp no parece válido. Revisalo, por favor.' });
@@ -636,7 +633,7 @@ app.post('/api/reservar', async (req, res) => {
         creado: new Date().toISOString(),
         recordatorioEnviado: false,
         completado: false,
-        consentimientoWhatsapp: { aceptado: true, fecha: new Date().toISOString() },
+        consentimientoWhatsapp: { aceptado: aceptaWhatsapp === true, fecha: aceptaWhatsapp === true ? new Date().toISOString() : null },
       };
       guardarTurno(turno);
       return { turno };
