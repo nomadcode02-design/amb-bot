@@ -609,8 +609,12 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(429).json({ error: 'Hiciste muchas reservas seguidas. Probá de nuevo en un rato o escribinos por WhatsApp.' });
     }
 
-    // La reserva web no depende del consentimiento para WhatsApp. El consentimiento
-    // es opcional y solo habilita mensajes sobre el turno si el cliente lo aceptó.
+    // Para crear una reserva desde la web, el cliente debe aceptar expresamente
+    // los mensajes transaccionales de WhatsApp relacionados con ese turno.
+    if (aceptaWhatsapp !== true) {
+      return res.status(400).json({ error: 'Para completar la reserva, tenés que aceptar los mensajes de confirmación y recordatorio por WhatsApp.' });
+    }
+
     const digitos = String(whatsapp).replace(/\D/g, '');
     if (digitos.length < 8 || digitos.length > 15) {
       return res.status(400).json({ error: 'El número de WhatsApp no parece válido. Revisalo, por favor.' });
