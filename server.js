@@ -192,8 +192,6 @@ const RECORDATORIOS_ACTIVOS = process.env.RECORDATORIOS_ACTIVOS === 'true';
 const WHATSAPP_ENVIOS_ACTIVOS = process.env.WHATSAPP_ENVIOS_ACTIVOS === 'true';
 // Máximo de intentos de envío por recordatorio (antes se reintentaba cada minuto).
 const MAX_INTENTOS_RECORDATORIO = 1;
-// Teléfono para hablar con una persona (se muestra en los mensajes automáticos).
-const TELEFONO_CONTACTO_HUMANO = process.env.TELEFONO_CONTACTO || '+54 9 2643 21-2176';
 
 const OPTOUT_FILE = path.join(DATA_DIR, 'optout.json');
 if (!fs.existsSync(OPTOUT_FILE)) fs.writeFileSync(OPTOUT_FILE, '{}');
@@ -455,7 +453,7 @@ function construirMensajeConfirmacion(turno) {
     `💰 Precio: ${turno.precio}\n\n` +
     `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
     `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.\n\n` +
-    `¿Necesitás hablar con una persona? Escribí HUMANO o llamanos al ${TELEFONO_CONTACTO_HUMANO}.\n\n` +
+    `¿Necesitás hablar con una persona? Escribí HUMANO.\n\n` +
     `¡Nos vemos pronto!`
   );
 }
@@ -609,12 +607,8 @@ app.post('/api/reservar', async (req, res) => {
       return res.status(429).json({ error: 'Hiciste muchas reservas seguidas. Probá de nuevo en un rato o escribinos por WhatsApp.' });
     }
 
-    // Para crear una reserva desde la web, el cliente debe aceptar expresamente
-    // los mensajes transaccionales de WhatsApp relacionados con ese turno.
-    if (aceptaWhatsapp !== true) {
-      return res.status(400).json({ error: 'Para completar la reserva, tenés que aceptar los mensajes de confirmación y recordatorio por WhatsApp.' });
-    }
-
+    // La reserva puede completarse sin aceptar mensajes de WhatsApp.
+    // El consentimiento solo habilita confirmaciones y recordatorios automatizados.
     const digitos = String(whatsapp).replace(/\D/g, '');
     if (digitos.length < 8 || digitos.length > 15) {
       return res.status(400).json({ error: 'El número de WhatsApp no parece válido. Revisalo, por favor.' });
@@ -1048,7 +1042,7 @@ app.post('/webhook', async (req, res) => {
       if (!guardarBaja(numeroCliente, true)) return;
       await enviarYRegistrar(numeroCliente,
         `✅ Listo, no te vamos a mandar más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\n` +
-        `Si querés volver a recibirlos, respondé ALTA. Cualquier duda: ${TELEFONO_CONTACTO_HUMANO}.`, 'webhook');
+        `Si querés volver a recibirlos, respondé ALTA. Si tenés alguna duda, escribinos por acá.`, 'webhook');
       return;
     }
     if (esPedidoDeAlta(texto)) {
@@ -1064,10 +1058,10 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    // Escalamiento claro a una persona: ofrece teléfono y atención presencial.
+    // Escalamiento a una persona por este mismo chat o atención presencial.
     if (esPedidoDeAyudaHumana(texto)) {
       await enviarYRegistrar(numeroCliente,
-        `👤 Para hablar con una persona de AMB BARBERS, llamanos al ${TELEFONO_CONTACTO_HUMANO}. También podés acercarte al local en Santa Rosa, 25 de Mayo, San Juan. Si preferís, contanos tu consulta por acá y la revisamos cuando el equipo esté disponible.`,
+        `👤 Para hablar con una persona de AMB BARBERS, contanos tu consulta por acá y la revisamos cuando el equipo esté disponible. También podés acercarte al local en Santa Rosa, 25 de Mayo, San Juan.`,
         'webhook');
       return;
     }
