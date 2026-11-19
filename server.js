@@ -453,7 +453,7 @@ function construirMensajeConfirmacion(turno) {
     `💰 Precio: ${turno.precio}\n\n` +
     `📍 Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
     `Te recomendamos llegar 5 minutos antes para disfrutar la experiencia completa.\n\n` +
-    `¿Necesitás hablar con una persona? Escribí HUMANO.\n\n` +
+    `Para atención personal, acercate al local AMB Barbers en Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.\n\n` +
     `¡Nos vemos pronto!`
   );
 }
@@ -1042,7 +1042,7 @@ app.post('/webhook', async (req, res) => {
       if (!guardarBaja(numeroCliente, true)) return;
       await enviarYRegistrar(numeroCliente,
         `✅ Listo, no te vamos a mandar más recordatorios por WhatsApp. Si tenés un turno reservado, sigue en pie.\n\n` +
-        `Si querés volver a recibirlos, respondé ALTA. Si tenés alguna duda, escribinos por acá.`, 'webhook');
+        `Si querés volver a recibirlos, respondé ALTA. Para atención personal, acercate al local AMB Barbers en Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.`, 'webhook');
       return;
     }
     if (esPedidoDeAlta(texto)) {
@@ -1061,7 +1061,7 @@ app.post('/webhook', async (req, res) => {
     // Escalamiento a una persona por este mismo chat o atención presencial.
     if (esPedidoDeAyudaHumana(texto)) {
       await enviarYRegistrar(numeroCliente,
-        `👤 Para hablar con una persona de AMB BARBERS, contanos tu consulta por acá y la revisamos cuando el equipo esté disponible. También podés acercarte al local en Santa Rosa, 25 de Mayo, San Juan.`,
+        `👤 Este número funciona con respuestas automáticas. Para hablar personalmente con el equipo de AMB BARBERS, acercate al local en Calle 9 de Julio, entre Mitre y Av. Ramón Barrera, Santa Rosa - 25 de Mayo, San Juan.`,
         'webhook');
       return;
     }
@@ -1156,7 +1156,7 @@ cron.schedule('* * * * *', async () => {
           turno.whatsapp,
           `⏰ ¡Hola ${turno.nombre}! Te recordamos tu turno el ${formatearFecha(turno.dia)} a las ${turno.horario} hs ` +
           `con ${turno.barbero} (${turno.servicio}). ¡Te esperamos en AMB Barbers!\n\n` +
-          `Si no querés recibir más recordatorios, respondé BAJA. Para hablar con una persona, escribí HUMANO.`,
+          `Si no querés recibir más recordatorios, respondé BAJA.`,
           'recordatorio'
         );
         if (resultado.enviado) {
